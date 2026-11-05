@@ -103,6 +103,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  importItems: (rows: Array<Record<string, string>>) =>
+    request<{ success: boolean; imported: number; message: string }>('/inventory/items/import', {
+      method: 'POST',
+      body: JSON.stringify({ rows }),
+    }),
   updateItem: (id: number, data: any) =>
     request<{ success: boolean; message: string }>(`/inventory/items/${id}`, {
       method: 'PUT',

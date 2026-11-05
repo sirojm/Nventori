@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Package,
   Layers,
@@ -17,7 +17,9 @@ import {
   RotateCcw,
   Sparkles,
   Tags,
-  Trash2
+  Trash2,
+  Download,
+  FileUp
 } from 'lucide-react';
 import { api } from '../services/api';
 import { ItemType, AssetUnit, StockPool, AssetKit, Category, Location } from '../types';
@@ -36,6 +38,60 @@ interface KitComponentForm {
   condition: 'baik' | 'rusak';
   is_required: number;
 }
+
+const importHeaders = [
+  'nama_barang',
+  'kode_katalog',
+  'kode_kategori',
+  'merek_model',
+  'satuan',
+  'mode_pelacakan',
+  'spesifikasi',
+  'stok_awal',
+  'kode_lokasi',
+  'kondisi_stok',
+];
+
+const parseCsv = (source: string): string[][] => {
+  const text = source.replace(/^\uFEFF/, '');
+  const firstLine = text.split(/\r?\n/, 1)[0] || '';
+  const delimiter = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length ? ';' : ',';
+  const records: string[][] = [];
+  let record: string[] = [];
+  let field = '';
+  let quoted = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '"' && text[i + 1] === '"') {
+        field += '"';
+        i += 1;
+      } else if (char === '"') {
+        quoted = false;
+      } else {
+        field += char;
+      }
+    } else if (char === '"' && field.length === 0) {
+      quoted = true;
+    } else if (char === delimiter) {
+      record.push(field);
+      field = '';
+    } else if (char === '\n' || char === '\r') {
+      if (char === '\r' && text[i + 1] === '\n') i += 1;
+      record.push(field);
+      if (record.some((value) => value.trim())) records.push(record);
+      record = [];
+      field = '';
+    } else {
+      field += char;
+    }
+  }
+  if (quoted) throw new Error('CSV memiliki tanda kutip yang belum ditutup.');
+  record.push(field);
+  if (record.some((value) => value.trim())) records.push(record);
+  return records;
+};
 
 export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }) => {
   const { user } = useAuth();
@@ -61,6 +117,12 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showEditKitModal, setShowEditKitModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importRows, setImportRows] = useState<Array<Record<string, string>>>([]);
+  const [importFileName, setImportFileName] = useState('');
+  const [importError, setImportError] = useState('');
+  const [importing, setImporting] = useState(false);
+  const importFileRef = useRef<HTMLInputElement>(null);
   const [selectedPool, setSelectedPool] = useState<StockPool | null>(null);
   const [editingKit, setEditingKit] = useState<AssetKit | null>(null);
   const [kitForm, setKitForm] = useState({
@@ -297,6 +359,87 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
     }
   };
 
+  const handleDownloadImportTemplate = () => {
+    const csv = `\uFEFF${importHeaders.join(';')}\r\n`;
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'template-import-katalog-nventori.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportFile = async (file?: File) => {
+    setImportRows([]);
+    setImportError('');
+    setImportFileName(file?.name || '');
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      setImportError('Pilih file CSV. Untuk Excel, gunakan Simpan Sebagai lalu pilih CSV UTF-8.');
+      return;
+    }
+
+    try {
+      const records = parseCsv(await file.text());
+      if (records.length < 2) throw new Error('CSV harus berisi header dan minimal satu baris barang.');
+      const headers = records[0].map((header) => header.trim().toLowerCase());
+      const missingHeaders = importHeaders.filter((header) => !headers.includes(header));
+      if (missingHeaders.length) {
+        throw new Error(`Kolom wajib tidak ditemukan: ${missingHeaders.join(', ')}.`);
+      }
+
+      const headerIndexes = importHeaders.map((header) => headers.indexOf(header));
+      const dataRows = records.slice(1);
+      if (dataRows.length > 500) throw new Error('Maksimal 500 baris barang dapat diimpor sekaligus.');
+
+      const parsedRows = dataRows.map((record, rowIndex) => {
+        if (record.length !== headers.length) {
+          throw new Error(`Jumlah kolom pada baris ${rowIndex + 2} tidak sesuai dengan header.`);
+        }
+        return Object.fromEntries(
+          importHeaders.map((header, index) => [header, record[headerIndexes[index]]?.trim() || ''])
+        );
+      });
+      setImportRows(parsedRows.map((row) => ({
+        name: row.nama_barang,
+        code: row.kode_katalog,
+        category_code: row.kode_kategori,
+        brand_model: row.merek_model,
+        unit_of_measure: row.satuan,
+        tracking_mode: row.mode_pelacakan,
+        specs: row.spesifikasi,
+        opening_stock: row.stok_awal,
+        location_code: row.kode_lokasi,
+        condition: row.kondisi_stok,
+      })));
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Gagal membaca file CSV.');
+    }
+  };
+
+  const handleImportItems = async () => {
+    if (!importRows.length) return;
+    setImporting(true);
+    setImportError('');
+    try {
+      const result = await api.importItems(importRows);
+      success(result.message);
+      setShowImportModal(false);
+      setImportRows([]);
+      setImportFileName('');
+      if (importFileRef.current) importFileRef.current.value = '';
+      await loadAll();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Gagal mengimpor katalog.';
+      setImportError(message);
+      error(message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const handleCreateAsset = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAsset.item_type_id || !newAsset.asset_code || !newAsset.location_id) {
@@ -362,6 +505,13 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
 
         {canManage && (
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowImportModal(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 text-xs font-semibold shadow-sm transition cursor-pointer"
+            >
+              <FileUp className="w-4 h-4 text-slate-500" />
+              <span>Import CSV</span>
+            </button>
             <button
               onClick={() => setShowCategoryModal(true)}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 text-xs font-semibold shadow-sm transition cursor-pointer"
@@ -699,6 +849,98 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Modal: Import Catalog CSV */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-5">
+            <div className="flex items-center justify-between border-b pb-3">
+              <div>
+                <h3 className="font-bold text-slate-900 text-sm">Import Katalog Barang</h3>
+                <p className="text-[11px] text-slate-500 mt-1">Impor CSV akan membuat katalog dan stok awal secara sekaligus.</p>
+              </div>
+              <button
+                onClick={() => setShowImportModal(false)}
+                className="text-slate-400 hover:text-slate-600"
+                aria-label="Tutup"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl bg-emerald-50 border border-emerald-100">
+              <div className="text-xs text-emerald-900">
+                <p className="font-bold">1. Unduh template, isi di Excel, lalu simpan sebagai CSV UTF-8.</p>
+                <p className="mt-1 text-[11px]">File .xlsx perlu disimpan sebagai .csv sebelum diunggah.</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleDownloadImportTemplate}
+                className="flex-shrink-0 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white border border-emerald-200 text-emerald-900 text-xs font-semibold hover:bg-emerald-100"
+              >
+                <Download className="w-4 h-4" />
+                Unduh Template CSV
+              </button>
+            </div>
+
+            <div className="space-y-2 text-[11px] text-slate-600">
+              <p><strong>Kolom:</strong> nama_barang, kode_katalog, kode_kategori, merek_model, satuan, mode_pelacakan, spesifikasi, stok_awal, kode_lokasi, kondisi_stok.</p>
+              <p><strong>Mode:</strong> unique_unit, quantity_pool, atau consumable. unique_unit harus stok_awal 0 dan unit fisiknya didaftarkan terpisah.</p>
+              <p><strong>Kondisi stok:</strong> baik atau rusak. Untuk stok kuantitas, kode_lokasi harus menunjuk lokasi aktif.</p>
+              <div>
+                <p className="font-semibold text-slate-700">Kode kategori aktif:</p>
+                <p className="font-mono break-words">{categories.filter((category) => category.is_active).map((category) => `${category.code} (${category.name})`).join(', ') || 'Belum ada kategori aktif.'}</p>
+              </div>
+              <div>
+                <p className="font-semibold text-slate-700">Kode lokasi aktif:</p>
+                <p className="font-mono break-words">{locations.filter((location) => location.is_active).map((location) => `${location.code} (${location.name})`).join(', ') || 'Belum ada lokasi aktif.'}</p>
+              </div>
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-700 text-xs mb-1">2. Pilih file CSV:</label>
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".csv,text/csv"
+                onChange={(e) => handleImportFile(e.target.files?.[0])}
+                className="block w-full text-xs text-slate-600 file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0 file:bg-slate-100 file:text-slate-700 file:font-semibold hover:file:bg-slate-200"
+              />
+              {importFileName && <p className="mt-1 text-[11px] text-slate-500">{importFileName}</p>}
+            </div>
+
+            {importRows.length > 0 && (
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+                <p className="font-semibold text-slate-800">{importRows.length} baris siap diimpor.</p>
+                <p className="text-slate-500 mt-1">Impor dibatalkan seluruhnya jika ditemukan baris tidak valid atau kode duplikat.</p>
+              </div>
+            )}
+            {importError && (
+              <div role="alert" className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">
+                {importError}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowImportModal(false)}
+                className="px-4 py-2 font-semibold text-slate-600 hover:text-slate-800"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleImportItems}
+                disabled={!importRows.length || importing}
+                className="px-4 py-2 bg-forest-800 hover:bg-forest-900 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-xl"
+              >
+                {importing ? 'Mengimpor...' : `Import ${importRows.length || ''} Barang`}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

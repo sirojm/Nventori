@@ -182,6 +182,154 @@ router.post('/items/generate-code', authenticate, authorize(['admin_inventaris']
   res.json({ success: true, code });
 });
 
+// POST /api/items/import (atomic CSV catalog import)
+router.post('/items/import', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const { rows } = req.body;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ success: false, message: 'File tidak berisi data barang untuk diimpor.' });
+  }
+  if (rows.length > 500) {
+    return res.status(400).json({ success: false, message: 'Maksimal 500 baris barang dapat diimpor sekaligus.' });
+  }
+
+  const errors = [];
+  const normalizedRows = [];
+  const seenCodes = new Set();
+  rows.forEach((row, index) => {
+    const rowNumber = index + 2;
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      errors.push(`Baris ${rowNumber}: format data tidak valid.`);
+      return;
+    }
+    const name = typeof row.name === 'string' ? row.name.trim() : '';
+    const code = typeof row.code === 'string' ? row.code.trim().toUpperCase() : '';
+    const categoryCode = typeof row.category_code === 'string' ? row.category_code.trim().toUpperCase() : '';
+    const trackingMode = typeof row.tracking_mode === 'string' ? row.tracking_mode.trim() : '';
+    const unitOfMeasure = typeof row.unit_of_measure === 'string' ? row.unit_of_measure.trim() : '';
+    const locationCode = typeof row.location_code === 'string' ? row.location_code.trim().toUpperCase() : '';
+    const condition = typeof row.condition === 'string' && row.condition.trim() ? row.condition.trim().toLowerCase() : 'baik';
+    const quantity = row.opening_stock === '' || row.opening_stock === null || row.opening_stock === undefined
+      ? 0
+      : Number(row.opening_stock);
+
+    if (!name || !code || !categoryCode || !trackingMode || !unitOfMeasure) {
+      errors.push(`Baris ${rowNumber}: nama, kode katalog, kode kategori, mode pelacakan, dan satuan wajib diisi.`);
+      return;
+    }
+    if (!['unique_unit', 'quantity_pool', 'consumable'].includes(trackingMode)) {
+      errors.push(`Baris ${rowNumber}: mode pelacakan harus unique_unit, quantity_pool, atau consumable.`);
+      return;
+    }
+    if (!Number.isSafeInteger(quantity) || quantity < 0) {
+      errors.push(`Baris ${rowNumber}: stok awal harus berupa bilangan bulat nol atau lebih.`);
+      return;
+    }
+    if (trackingMode === 'unique_unit' && quantity !== 0) {
+      errors.push(`Baris ${rowNumber}: stok awal untuk unique_unit harus 0; daftarkan setiap unit fisik secara terpisah.`);
+      return;
+    }
+    if (trackingMode !== 'unique_unit' && !locationCode) {
+      errors.push(`Baris ${rowNumber}: kode lokasi wajib untuk barang dengan stok kuantitas.`);
+      return;
+    }
+    if (!['baik', 'rusak'].includes(condition)) {
+      errors.push(`Baris ${rowNumber}: kondisi stok harus baik atau rusak.`);
+      return;
+    }
+    if (seenCodes.has(code)) {
+      errors.push(`Baris ${rowNumber}: kode katalog ${code} muncul lebih dari sekali dalam file.`);
+      return;
+    }
+    seenCodes.add(code);
+
+    const category = query.get('SELECT id FROM categories WHERE code = ? AND is_active = 1', [categoryCode]);
+    if (!category) {
+      errors.push(`Baris ${rowNumber}: kategori aktif dengan kode ${categoryCode} tidak ditemukan.`);
+      return;
+    }
+    const location = trackingMode === 'unique_unit'
+      ? null
+      : query.get('SELECT id FROM locations WHERE code = ? AND is_active = 1', [locationCode]);
+    if (trackingMode !== 'unique_unit' && !location) {
+      errors.push(`Baris ${rowNumber}: lokasi aktif dengan kode ${locationCode} tidak ditemukan.`);
+      return;
+    }
+    if (query.get('SELECT id FROM item_types WHERE code = ? COLLATE NOCASE', [code])) {
+      errors.push(`Baris ${rowNumber}: kode katalog ${code} sudah digunakan.`);
+      return;
+    }
+
+    normalizedRows.push({
+      rowNumber,
+      name,
+      code,
+      categoryId: category.id,
+      categoryCode,
+      brandModel: typeof row.brand_model === 'string' ? row.brand_model.trim() : '',
+      unitOfMeasure,
+      specs: typeof row.specs === 'string' ? row.specs.trim() : '',
+      trackingMode,
+      openingStock: quantity,
+      locationId: location?.id ?? null,
+      condition,
+    });
+  });
+
+  if (errors.length) {
+    const summary = errors.slice(0, 8).join(' ');
+    const remainder = errors.length > 8 ? ` Dan ${errors.length - 8} kesalahan lainnya.` : '';
+    return res.status(400).json({
+      success: false,
+      message: `Impor dibatalkan; tidak ada data yang disimpan. ${summary}${remainder}`,
+    });
+  }
+
+  const importRows = query.transaction(() => {
+    for (const row of normalizedRows) {
+      const result = query.run(`
+        INSERT INTO item_types (name, code, category_id, brand_model, unit_of_measure, specs, tracking_mode)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [row.name, row.code, row.categoryId, row.brandModel || null, row.unitOfMeasure, row.specs || null, row.trackingMode]
+      );
+      const itemId = result.lastInsertRowid;
+
+      if (row.trackingMode !== 'unique_unit') {
+        query.run(`
+          INSERT INTO stock_pools (item_type_id, location_id, quantity_total, quantity_available, quantity_reserved, quantity_checked_out, condition)
+          VALUES (?, ?, ?, ?, 0, 0, ?)`,
+          [itemId, row.locationId, row.openingStock, row.openingStock, row.condition]
+        );
+        if (row.openingStock > 0) {
+          query.run(`
+            INSERT INTO stock_movements (item_type_id, movement_type, quantity, destination_location_id, operator_id, reason)
+            VALUES (?, 'masuk', ?, ?, ?, ?)`,
+            [itemId, row.openingStock, row.locationId, req.user.id, `Stok awal dari impor katalog CSV (${row.code})`]
+          );
+        }
+      }
+
+      logAudit(req.user.id, req.user.name, req.user.role, 'IMPORT', 'ITEM_TYPE', itemId, {
+        name: row.name,
+        code: row.code,
+        category_code: row.categoryCode,
+        opening_stock: row.openingStock,
+      });
+    }
+    return normalizedRows.length;
+  });
+
+  try {
+    const imported = importRows();
+    res.json({ success: true, imported, message: `${imported} katalog barang berhasil diimpor.` });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(400).json({ success: false, message: 'Impor dibatalkan karena ada kode katalog atau kombinasi stok yang sudah digunakan.' });
+    }
+    console.error('[Inventory] Failed to import catalog CSV:', err);
+    res.status(500).json({ success: false, message: 'Gagal mengimpor katalog barang.' });
+  }
+});
+
 router.post('/items', authenticate, authorize(['admin_inventaris']), (req, res) => {
   const { name, code, category_id, brand_model, unit_of_measure, specs, tracking_mode } = req.body;
   if (!name || !code || !category_id || !tracking_mode) {
