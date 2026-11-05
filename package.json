@@ -1,0 +1,44 @@
+{
+  "name": "nventori",
+  "version": "1.5.0",
+  "private": true,
+  "description": "Sistem Manajemen Inventaris Alat Kantor Nventori",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -p \"[{name}]\" -n \"API,APP\" -c \"cyan,green\" \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "node --watch server/index.js",
+    "dev:client": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "node server/index.js",
+    "seed": "node server/db/seeder.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "html5-qrcode": "^2.3.8",
+    "jsonwebtoken": "^9.0.2",
+    "lucide-react": "^1.16.0",
+    "qrcode": "^1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/node": "^22.13.9",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.1.2",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  }
+}

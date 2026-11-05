@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  nventori-app:
+    build: .
+    container_name: nventori_app
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - NODE_ENV=production
+      - JWT_SECRET=nventori-super-secret-production-key-2026
+    volumes:
+      - ./data:/app/data
+      - ./nventori.db:/app/nventori.db
