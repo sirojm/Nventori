@@ -24,6 +24,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [scanResult, setScanResult] = useState<{ type: string; data: any } | null>(null);
   const [scannerActive, setScannerActive] = useState(false);
+  const [cameraStarting, setCameraStarting] = useState(false);
   const [selectedCount, setSelectedCount] = useState(0);
   const [lastScannedAsset, setLastScannedAsset] = useState<AssetUnit | null>(null);
   const scannerRef = useRef<Html5Qrcode | null>(null);
@@ -43,24 +44,19 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   const startScanner = async () => {
     setErrorMsg(null);
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-      const secureUrl = `https://${window.location.hostname}:5173`;
+      const secureUrl = `https://${window.location.hostname}${window.location.port ? `:${window.location.port}` : ''}`;
       setErrorMsg(`Browser memblokir kamera karena halaman belum dibuka lewat HTTPS. Buka ${secureUrl} lalu izinkan sertifikat pengembangan di HP.`);
       return;
     }
 
+    setCameraStarting(true);
     try {
       if (scannerRef.current) await stopScanner();
       const html5QrCode = new Html5Qrcode('qr-reader');
       scannerRef.current = html5QrCode;
 
-      const cameras = await Html5Qrcode.getCameras();
-      if (!cameras.length) {
-        throw new Error('Tidak ada kamera yang terdeteksi pada perangkat ini.');
-      }
-      const camera = cameras.find(({ label }) => /back|rear|environment|belakang/i.test(label)) || cameras[0];
-
       await html5QrCode.start(
-        camera.id,
+        { facingMode: 'environment' },
         {
           fps: 10,
           qrbox: { width: 220, height: 220 },
@@ -82,14 +78,14 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
       console.warn('Camera scan not started:', err);
       const errorName = err?.name || '';
       const errorMessage = err instanceof Error ? err.message : String(err || '');
-      if (errorName === 'NotAllowedError' || errorName === 'PermissionDeniedError') {
+      if (errorName === 'NotAllowedError' || errorName === 'PermissionDeniedError' || /permission|denied|not allowed/i.test(errorMessage)) {
         setErrorMsg('Izin kamera ditolak. Aktifkan izin Kamera untuk situs ini di pengaturan browser, lalu coba lagi.');
-      } else if (errorName === 'NotFoundError' || errorMessage.includes('No cameras found')) {
+      } else if (errorName === 'NotFoundError' || /no camera|camera.*not found/i.test(errorMessage)) {
         setErrorMsg('Kamera tidak ditemukan. Pastikan kamera HP berfungsi dan tidak sedang digunakan aplikasi lain.');
-      } else if (errorName === 'NotReadableError' || errorName === 'TrackStartError') {
+      } else if (errorName === 'NotReadableError' || errorName === 'TrackStartError' || /could not start video source|device in use/i.test(errorMessage)) {
         setErrorMsg('Kamera sedang digunakan aplikasi lain atau tidak dapat dibuka. Tutup aplikasi kamera lain lalu coba lagi.');
       } else {
-        setErrorMsg(errorMessage || 'Kamera gagal dibuka. Periksa izin kamera browser dan coba lagi.');
+        setErrorMsg(`Kamera gagal dibuka${errorMessage ? `: ${errorMessage}` : '. Periksa izin kamera browser dan coba lagi.'}`);
       }
       const scanner = scannerRef.current;
       scannerRef.current = null;
@@ -99,6 +95,8 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
         console.warn('QR scanner could not be cleared after startup failure:', clearError);
       }
       setScannerActive(false);
+    } finally {
+      setCameraStarting(false);
     }
   };
 
@@ -185,19 +183,26 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
           {/* Camera Frame */}
           <div className="flex flex-col items-center">
             <div
-              id="qr-reader"
-              className="w-full max-w-[280px] h-[220px] rounded-xl bg-slate-900 overflow-hidden relative flex items-center justify-center text-slate-400 border-2 border-slate-200"
+              className="relative w-full max-w-[280px] h-[220px] rounded-xl bg-slate-900 overflow-hidden border-2 border-slate-200"
             >
-              {!scannerActive && (
-                <div className="flex flex-col items-center text-center p-4 space-y-2">
-                  <Camera className="w-10 h-10 text-slate-500" />
-                  <p className="text-xs text-slate-400">Kamera siap diaktifkan</p>
+              {/* html5-qrcode owns this element's children; keep React content outside it. */}
+              <div id="qr-reader" className="h-full w-full" />
+              {!scannerActive && !cameraStarting && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-4 space-y-2 bg-slate-900">
+                  <Camera className="w-10 h-10 text-slate-300" />
+                  <p className="text-xs text-slate-200">Kamera siap diaktifkan</p>
                   <button
                     onClick={startScanner}
-                    className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow transition cursor-pointer"
+                    className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow transition cursor-pointer"
                   >
                     Buka Kamera
                   </button>
+                </div>
+              )}
+              {cameraStarting && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center bg-slate-900">
+                  <span className="h-7 w-7 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  <p className="text-xs text-white">Meminta izin dan menghubungkan kamera...</p>
                 </div>
               )}
             </div>
@@ -246,7 +251,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
 
           {/* Error Message */}
           {errorMsg && (
-            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 flex items-start gap-2 text-xs text-rose-800">
+            <div role="alert" className="p-3 rounded-xl bg-rose-50 border border-rose-200 flex items-start gap-2 text-xs text-rose-800">
               <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
               <span>{errorMsg}</span>
             </div>
