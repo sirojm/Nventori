@@ -48,6 +48,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(credentials),
     }),
+  changePassword: (data: { current_password: string; new_password: string }) =>
+    request<{ success: boolean; message: string }>('/auth/password', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   getMe: () => request<{ success: boolean; user: any }>('/auth/me'),
   getUsers: () => request<{ success: boolean; users: any[] }>('/auth/users'),
   getUnits: () => request<{ success: boolean; units: any[] }>('/auth/units'),

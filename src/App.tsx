@@ -21,11 +21,12 @@ import { QRScannerModal } from './components/scanner/QRScannerModal';
 import { ReturnModal } from './pages/ReturnModal';
 import { LabelPrintModal } from './components/print/LabelPrintModal';
 import { ReceiptPrintModal } from './components/print/ReceiptPrintModal';
+import { ChangePasswordModal } from './components/auth/ChangePasswordModal';
 
 import { AssetUnit, Transaction } from './types';
 
 const AppContent: React.FC = () => {
-  const { user, loading, isAuthenticated } = useAuth();
+  const { user, loading, isAuthenticated, logout } = useAuth();
 
   // Navigation State
   const [currentPage, setCurrentPage] = useState<DesktopNavPage | 'new_transaction' | 'more'>('dashboard');
@@ -33,6 +34,7 @@ const AppContent: React.FC = () => {
 
   // Modals
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isReturnModalOpen, setIsReturnModalOpen] = useState(false);
   const [selectedTxForReturn, setSelectedTxForReturn] = useState<Transaction | null>(null);
 
@@ -131,6 +133,7 @@ const AppContent: React.FC = () => {
           title={titles[currentPage] || 'Nventori'}
           onOpenScanner={() => setIsScannerOpen(true)}
           onOpenNotifications={() => setCurrentPage('dashboard')}
+          onChangePassword={() => setIsChangePasswordOpen(true)}
         />
 
         <main className="flex-1">
@@ -197,6 +200,8 @@ const AppContent: React.FC = () => {
             <MobileMorePage
               user={user}
               onNavigate={handleDesktopNavigate}
+              onChangePassword={() => setIsChangePasswordOpen(true)}
+              onLogout={logout}
             />
           )}
         </main>
@@ -214,6 +219,11 @@ const AppContent: React.FC = () => {
         isOpen={isScannerOpen}
         onClose={() => setIsScannerOpen(false)}
         onSelectResult={handleScannerResult}
+      />
+
+      <ChangePasswordModal
+        isOpen={isChangePasswordOpen}
+        onClose={() => setIsChangePasswordOpen(false)}
       />
 
       <ReturnModal

@@ -1,14 +1,21 @@
 import React from 'react';
-import { CalendarCheck2, FileBarChart, ShieldAlert, UserCog, Users } from 'lucide-react';
+import { CalendarCheck2, FileBarChart, KeyRound, LogOut, ShieldAlert, UserCog, Users } from 'lucide-react';
 import { DesktopNavPage } from '../components/layout/Sidebar';
 import { User } from '../types';
 
 interface MobileMorePageProps {
   user: User | null;
   onNavigate: (page: DesktopNavPage) => void;
+  onChangePassword: () => void;
+  onLogout: () => void;
 }
 
-export const MobileMorePage: React.FC<MobileMorePageProps> = ({ user, onNavigate }) => {
+export const MobileMorePage: React.FC<MobileMorePageProps> = ({
+  user,
+  onNavigate,
+  onChangePassword,
+  onLogout,
+}) => {
   const menuItems = [
     { id: 'contacts', label: 'Kontak Peminjam', description: 'Lihat dan kelola kontak peminjam', icon: Users },
     { id: 'activities', label: 'Kegiatan & Saran', description: 'Agenda dan saran kebutuhan', icon: CalendarCheck2 },
@@ -47,6 +54,31 @@ export const MobileMorePage: React.FC<MobileMorePageProps> = ({ user, onNavigate
           );
         })}
       </nav>
+
+      <section aria-label="Akun petugas" className="grid gap-3 border-t border-slate-200 pt-5">
+        <button
+          type="button"
+          onClick={onChangePassword}
+          className="w-full flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition-colors hover:border-emerald-300 hover:bg-emerald-50/40"
+        >
+          <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-forest-800">
+            <KeyRound className="h-5 w-5" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold text-slate-900">Ganti Password</span>
+            <span className="mt-0.5 block text-xs text-slate-500">Perbarui password akun petugas</span>
+          </span>
+          <span aria-hidden="true" className="text-slate-400">›</span>
+        </button>
+        <button
+          type="button"
+          onClick={onLogout}
+          className="flex w-full items-center gap-3 rounded-2xl border border-rose-200 bg-white p-4 text-left text-sm font-semibold text-rose-700 shadow-sm transition-colors hover:bg-rose-50"
+        >
+          <LogOut className="h-5 w-5" />
+          Keluar Sesi
+        </button>
+      </section>
     </div>
   );
 };

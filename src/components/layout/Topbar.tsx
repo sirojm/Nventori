@@ -1,17 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { Bell, QrCode, Search, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { Bell, KeyRound, QrCode } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 
 interface TopbarProps {
   onOpenScanner: () => void;
   onOpenNotifications: () => void;
+  onChangePassword: () => void;
   title?: string;
 }
 
 export const Topbar: React.FC<TopbarProps> = ({
   onOpenScanner,
   onOpenNotifications,
+  onChangePassword,
   title = 'Beranda',
 }) => {
   const { user } = useAuth();
@@ -44,6 +46,16 @@ export const Topbar: React.FC<TopbarProps> = ({
 
       {/* Actions */}
       <div className="flex items-center gap-2 sm:gap-3">
+        <button
+          onClick={onChangePassword}
+          className="flex h-9 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-2.5 text-slate-600 transition-colors hover:bg-slate-50 sm:px-3"
+          aria-label="Ganti Password"
+          title="Ganti Password"
+        >
+          <KeyRound className="h-4 w-4" />
+          <span className="hidden text-xs font-medium sm:inline">Ganti Password</span>
+        </button>
+
         {/* Mobile Scanner Button */}
         <button
           onClick={onOpenScanner}

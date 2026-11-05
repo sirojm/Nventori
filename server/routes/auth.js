@@ -70,6 +70,37 @@ router.get('/me', authenticate, (req, res) => {
   res.json({ success: true, user });
 });
 
+// PUT /api/auth/password
+router.put('/password', authenticate, (req, res) => {
+  const { current_password, new_password } = req.body;
+
+  if (typeof current_password !== 'string' || typeof new_password !== 'string') {
+    return res.status(400).json({ success: false, message: 'Password lama dan password baru wajib diisi.' });
+  }
+
+  if (new_password.length < 8) {
+    return res.status(400).json({ success: false, message: 'Password baru minimal 8 karakter.' });
+  }
+
+  const user = query.get('SELECT password_hash FROM users WHERE id = ?', [req.user.id]);
+  if (!user || !bcrypt.compareSync(current_password, user.password_hash)) {
+    return res.status(400).json({ success: false, message: 'Password lama tidak sesuai.' });
+  }
+
+  if (bcrypt.compareSync(new_password, user.password_hash)) {
+    return res.status(400).json({ success: false, message: 'Password baru harus berbeda dari password lama.' });
+  }
+
+  query.run(
+    'UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    [bcrypt.hashSync(new_password, 10), req.user.id]
+  );
+
+  logAudit(req.user.id, req.user.name, req.user.role, 'CHANGE_PASSWORD', 'USER', req.user.id, 'Petugas mengganti password sendiri');
+
+  return res.json({ success: true, message: 'Password berhasil diganti.' });
+});
+
 // GET /api/auth/units (List organizational units)
 router.get('/units', authenticate, (req, res) => {
   const units = query.all('SELECT * FROM organizational_units ORDER BY name ASC');
