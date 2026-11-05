@@ -8,11 +8,15 @@ import {
   Trash2,
   CheckCircle2,
   AlertCircle,
-  FileText
+  FileText,
+  Camera,
+  Search,
+  Check
 } from 'lucide-react';
 import { api } from '../services/api';
 import { BorrowerContact, ItemType, AssetUnit, AssetKit } from '../types';
 import { useToast } from '../context/ToastContext';
+import { QRScannerModal } from '../components/scanner/QRScannerModal';
 
 interface NewTransactionPageProps {
   onBack: () => void;
@@ -56,6 +60,8 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
   const [items, setItems] = useState<ItemType[]>([]);
   const [assets, setAssets] = useState<AssetUnit[]>([]);
   const [kits, setKits] = useState<AssetKit[]>([]);
+  const [assetSearch, setAssetSearch] = useState('');
+  const [isAssetScannerOpen, setIsAssetScannerOpen] = useState(false);
 
   interface SelectedLine {
     item_type_id: number;
@@ -72,7 +78,6 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
 
   // Item selector state
   const [selectedItemTypeId, setSelectedItemTypeId] = useState<string>('');
-  const [selectedAssetId, setSelectedAssetId] = useState<string>('');
   const [selectedKitId, setSelectedKitId] = useState<string>('');
   const [inputQty, setInputQty] = useState<number>(1);
 
@@ -130,38 +135,88 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
     const it = items.find((i) => String(i.id) === selectedItemTypeId);
     if (!it) return;
 
-    if (it.tracking_mode === 'unique_unit') {
-      const asset = assets.find((a) => String(a.id) === selectedAssetId);
-      if (!asset) {
-        error('Harap pilih unit fisik spesifik.');
-        return;
+    if (it.tracking_mode === 'unique_unit') return;
+    setSelectedLines((prev) => [
+      ...prev,
+      {
+        item_type_id: it.id,
+        item_name: it.name,
+        tracking_mode: it.tracking_mode,
+        quantity: Math.max(1, inputQty),
+      },
+    ]);
+    setSelectedItemTypeId('');
+    setInputQty(1);
+  };
+
+  const addAssetToSelection = (asset: AssetUnit): boolean => {
+    const availableAsset = assets.find((candidate) => candidate.id === asset.id && candidate.status === 'tersedia');
+    if (!availableAsset || selectedLines.some((line) => line.asset_unit_id === asset.id)) return false;
+    setSelectedLines((prev) => [
+      ...prev,
+      {
+        item_type_id: availableAsset.item_type_id,
+        item_name: availableAsset.item_name || 'Aset fisik',
+        tracking_mode: 'unique_unit',
+        asset_unit_id: availableAsset.id,
+        asset_code: availableAsset.asset_code,
+        quantity: 1,
+      },
+    ]);
+    return true;
+  };
+
+  const toggleAssetSelection = (asset: AssetUnit, checked: boolean) => {
+    setSelectedLines((prev) => {
+      if (checked) {
+        if (prev.some((line) => line.asset_unit_id === asset.id)) return prev;
+        return [
+          ...prev,
+          {
+            item_type_id: asset.item_type_id,
+            item_name: asset.item_name || 'Aset fisik',
+            tracking_mode: 'unique_unit',
+            asset_unit_id: asset.id,
+            asset_code: asset.asset_code,
+            quantity: 1,
+          },
+        ];
       }
-      setSelectedLines((prev) => [
-        ...prev,
-        {
-          item_type_id: it.id,
-          item_name: it.name,
-          tracking_mode: 'unique_unit',
+      return prev.filter((line) => line.asset_unit_id !== asset.id);
+    });
+  };
+
+  const availableAssets = assets.filter((asset) => {
+    const searchTerm = assetSearch.trim().toLowerCase();
+    return !searchTerm || asset.asset_code.toLowerCase().includes(searchTerm) ||
+      (asset.item_name || '').toLowerCase().includes(searchTerm) ||
+      (asset.category_name || '').toLowerCase().includes(searchTerm);
+  });
+  const unselectedVisibleAssets = availableAssets.filter(
+    (asset) => !selectedLines.some((line) => line.asset_unit_id === asset.id)
+  );
+  const allVisibleAssetsSelected = availableAssets.length > 0 &&
+    availableAssets.every((asset) => selectedLines.some((line) => line.asset_unit_id === asset.id));
+
+  const toggleVisibleAssets = (checked: boolean) => {
+    setSelectedLines((prev) => {
+      if (!checked) {
+        const visibleIds = new Set(availableAssets.map((asset) => asset.id));
+        return prev.filter((line) => !line.asset_unit_id || !visibleIds.has(line.asset_unit_id));
+      }
+      const selectedIds = new Set(prev.map((line) => line.asset_unit_id).filter(Boolean));
+      const newLines = availableAssets
+        .filter((asset) => !selectedIds.has(asset.id))
+        .map((asset) => ({
+          item_type_id: asset.item_type_id,
+          item_name: asset.item_name || 'Aset fisik',
+          tracking_mode: 'unique_unit' as const,
           asset_unit_id: asset.id,
           asset_code: asset.asset_code,
           quantity: 1,
-        },
-      ]);
-      setSelectedAssetId('');
-      setSelectedItemTypeId('');
-    } else {
-      setSelectedLines((prev) => [
-        ...prev,
-        {
-          item_type_id: it.id,
-          item_name: it.name,
-          tracking_mode: it.tracking_mode,
-          quantity: Math.max(1, inputQty),
-        },
-      ]);
-      setSelectedItemTypeId('');
-      setInputQty(1);
-    }
+        }));
+      return [...prev, ...newLines];
+    });
   };
 
   const removeLine = (idx: number) => {
@@ -170,7 +225,9 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!borrowerForm.full_name || !borrowerForm.institution || !borrowerForm.email || !borrowerForm.phone_wa) {
+    if (txType === 'inter_unit_loan' &&
+      (!borrowerForm.full_name.trim() || !borrowerForm.institution.trim() ||
+        !borrowerForm.email.trim() || !borrowerForm.phone_wa.trim())) {
       error('Harap lengkapi identitas peminjam/PIC.');
       return;
     }
@@ -191,11 +248,11 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
     try {
       const payload = {
         transaction_type: txType,
-        borrower_contact_id: selectedContactId ? Number(selectedContactId) : null,
-        borrower_name: borrowerForm.full_name,
-        borrower_unit: borrowerForm.institution,
-        borrower_phone: borrowerForm.phone_wa,
-        borrower_email: borrowerForm.email,
+        borrower_contact_id: txType === 'inter_unit_loan' && selectedContactId ? Number(selectedContactId) : null,
+        borrower_name: txType === 'inter_unit_loan' ? borrowerForm.full_name : '',
+        borrower_unit: txType === 'inter_unit_loan' ? borrowerForm.institution : '',
+        borrower_phone: txType === 'inter_unit_loan' ? borrowerForm.phone_wa : '',
+        borrower_email: txType === 'inter_unit_loan' ? borrowerForm.email : '',
         event_name: eventName,
         location_name: locationName,
         start_date: startDate,
@@ -227,9 +284,6 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
   };
 
   const selectedItem = items.find((i) => String(i.id) === selectedItemTypeId);
-  const availableAssetsForItem = assets.filter(
-    (a) => a.item_type_id === Number(selectedItemTypeId) && !selectedLines.some((l) => l.asset_unit_id === a.id)
-  );
 
   return (
     <div className="p-4 md:p-8 space-y-6 max-w-4xl mx-auto pb-24 md:pb-12">
@@ -248,16 +302,69 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">
-        {/* Step 1: Peminjam */}
+        {/* Step 1: Transaction type */}
+        <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-4">
+          <div className="flex items-center justify-between border-b pb-3">
+            <span className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-2">
+              <FileText className="w-4 h-4 text-forest-800" />
+              1. Jenis Transaksi
+            </span>
+            <span className="text-[11px] text-emerald-800 font-semibold">Tanpa Antrean Approval Aplikasi</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <button
+              type="button"
+              onClick={() => setTxType('internal_usage')}
+              className={`p-3 rounded-xl border text-left transition cursor-pointer ${
+                txType === 'internal_usage'
+                  ? 'border-emerald-600 bg-emerald-50/50 text-emerald-950 ring-1 ring-emerald-500'
+                  : 'border-slate-200 text-slate-700'
+              }`}
+            >
+              <div className="font-bold">Pemakaian Internal</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Penggunaan inventaris di dalam unit/kantor sendiri</div>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTxType('inter_unit_loan')}
+              className={`p-3 rounded-xl border text-left transition cursor-pointer ${
+                txType === 'inter_unit_loan'
+                  ? 'border-purple-600 bg-purple-50/50 text-purple-950 ring-1 ring-purple-500'
+                  : 'border-slate-200 text-slate-700'
+              }`}
+            >
+              <div className="font-bold">Pinjaman Antarunit</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Dengan referensi surat yang telah diterima di luar aplikasi</div>
+            </button>
+          </div>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+            <p className="text-[11px] text-slate-500">
+              Alat sudah disiapkan? Pindai QR untuk memasukkannya ke daftar, lalu lengkapi detail transaksi. Reservasi aset dilakukan saat transaksi disimpan.
+            </p>
+            <button
+              type="button"
+              onClick={() => setIsAssetScannerOpen(true)}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-emerald-700 text-forest-800 hover:bg-emerald-50 text-xs font-semibold transition cursor-pointer whitespace-nowrap"
+            >
+              <Camera className="w-4 h-4" />
+              Scan alat yang disiapkan
+            </button>
+          </div>
+        </div>
+
+        {/* Step 2: Borrower identity, required only for inter-unit loans */}
         <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-4">
           <div className="flex items-center justify-between border-b pb-3">
             <span className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-2">
               <Users className="w-4 h-4 text-forest-800" />
-              1. Identitas Peminjam / Penanggung Jawab
+              2. Identitas Peminjam / Penanggung Jawab
             </span>
-            <span className="text-[11px] text-slate-400">Peminjam tidak perlu login</span>
+            <span className="text-[11px] text-slate-400">
+              {txType === 'internal_usage' ? 'Tidak diperlukan untuk pemakaian internal' : 'Peminjam tidak perlu login'}
+            </span>
           </div>
 
+          {txType === 'inter_unit_loan' ? (
           <div className="space-y-3 text-xs">
             <div>
               <label className="block font-semibold text-slate-700 mb-1">
@@ -327,47 +434,29 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
               </div>
             </div>
           </div>
+          ) : (
+            <p className="text-xs text-slate-600">
+              Identitas PIC tidak perlu diisi untuk pemakaian internal. Petugas dapat langsung melanjutkan ke waktu dan barang yang digunakan.
+            </p>
+          )}
         </div>
 
-        {/* Step 2: Jenis Transaksi & Surat Antarunit */}
+        {/* Step 3: Supporting documents */}
         <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-4">
           <div className="flex items-center justify-between border-b pb-3">
             <span className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-2">
               <FileText className="w-4 h-4 text-forest-800" />
-              2. Jenis Transaksi & Dokumen Pendukung
+              3. Dokumen Pendukung
             </span>
             <span className="text-[11px] text-emerald-800 font-semibold">Tanpa Antrean Approval Aplikasi</span>
           </div>
 
           <div className="space-y-3 text-xs">
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setTxType('internal_usage')}
-                className={`p-3 rounded-xl border text-left transition cursor-pointer ${
-                  txType === 'internal_usage'
-                    ? 'border-emerald-600 bg-emerald-50/50 text-emerald-950 ring-1 ring-emerald-500'
-                    : 'border-slate-200 text-slate-700'
-                }`}
-              >
-                <div className="font-bold">Pemakaian Internal</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Penggunaan inventaris di dalam unit/kantor sendiri</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setTxType('inter_unit_loan')}
-                className={`p-3 rounded-xl border text-left transition cursor-pointer ${
-                  txType === 'inter_unit_loan'
-                    ? 'border-purple-600 bg-purple-50/50 text-purple-950 ring-1 ring-purple-500'
-                    : 'border-slate-200 text-slate-700'
-                }`}
-              >
-                <div className="font-bold">Pinjaman Antarunit</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Dengan referensi surat yang telah diterima di luar aplikasi</div>
-              </button>
-            </div>
-
+            {txType === 'internal_usage' && (
+              <p className="text-slate-600">
+                Pemakaian internal tidak memerlukan surat pengantar.
+              </p>
+            )}
             {/* Reference letter fields if inter-unit */}
             {txType === 'inter_unit_loan' && (
               <div className="p-4 rounded-xl bg-purple-50/60 border border-purple-200 space-y-3 mt-3">
@@ -425,12 +514,12 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
           </div>
         </div>
 
-        {/* Step 3: Waktu, Lokasi & Kegiatan */}
+        {/* Step 4: Waktu, Lokasi & Kegiatan */}
         <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-4">
           <div className="flex items-center justify-between border-b pb-3">
             <span className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-2">
               <Calendar className="w-4 h-4 text-forest-800" />
-              3. Waktu & Lokasi Keperluan
+              4. Waktu & Lokasi Keperluan
             </span>
           </div>
 
@@ -483,89 +572,149 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
           </div>
         </div>
 
-        {/* Step 4: Pemilihan Peralatan & Paket */}
+        {/* Step 5: Pemilihan Peralatan & Paket */}
         <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-4">
           <div className="flex items-center justify-between border-b pb-3">
             <span className="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-2">
               <Package className="w-4 h-4 text-forest-800" />
-              4. Pemilihan Peralatan & Paket
+              5. Pemilihan Peralatan & Paket
             </span>
             <span className="text-[11px] text-slate-500">{selectedLines.length} item dipilih</span>
           </div>
 
-          {/* Add Item Widget */}
-          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs">
-            <span className="font-bold text-slate-800 block">Pilih Barang dari Katalog atau Paket:</span>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <select
-                value={selectedKitId}
-                onChange={(e) => {
-                  setSelectedKitId(e.target.value);
-                  setSelectedItemTypeId('');
-                }}
-                className="px-3 py-2 border rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 font-medium"
-              >
-                <option value="">-- Atau Pilih Paket Lengkap (Kit) --</option>
-                {kits.map((k) => (
-                  <option key={k.id} value={k.id}>
-                    {k.name} ({k.kit_code})
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={selectedItemTypeId}
-                onChange={(e) => {
-                  setSelectedItemTypeId(e.target.value);
-                  setSelectedKitId('');
-                }}
-                className="px-3 py-2 border rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 font-medium"
-              >
-                <option value="">-- Pilih Jenis Barang --</option>
-                {items.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.name} ({i.tracking_mode === 'unique_unit' ? 'Unit Unik' : 'Stok Kuantitas'})
-                  </option>
-                ))}
-              </select>
-
-              {selectedItem?.tracking_mode === 'unique_unit' ? (
-                <select
-                  value={selectedAssetId}
-                  onChange={(e) => setSelectedAssetId(e.target.value)}
-                  className="px-3 py-2 border rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 font-mono"
+          <div className="space-y-4">
+            <section className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <span className="font-bold text-slate-800 block">Unit fisik satu per satu</span>
+                  <span className="text-[11px] text-slate-500">Pilih dengan ceklis atau pindai QR setelah alat disiapkan.</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAssetScannerOpen(true)}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-forest-800 hover:bg-forest-900 text-white font-semibold transition cursor-pointer"
                 >
-                  <option value="">-- Pilih Unit Fisik (Kode Aset) --</option>
-                  {availableAssetsForItem.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.asset_code} ({a.condition})
+                  <Camera className="w-4 h-4" />
+                  Pindai QR Aset
+                </button>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="search"
+                    value={assetSearch}
+                    onChange={(e) => setAssetSearch(e.target.value)}
+                    placeholder="Cari nama barang, kategori, atau kode aset..."
+                    className="w-full pl-9 pr-3 py-2 border rounded-xl bg-white focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+                {availableAssets.length > 0 && (
+                  <label className="inline-flex items-center gap-2 px-2 text-slate-600 font-semibold cursor-pointer whitespace-nowrap">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleAssetsSelected}
+                      onChange={(e) => toggleVisibleAssets(e.target.checked)}
+                      className="rounded border-slate-300 text-forest-800 focus:ring-emerald-500"
+                    />
+                    Pilih semua ({availableAssets.length})
+                  </label>
+                )}
+              </div>
+              <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white divide-y divide-slate-100">
+                {availableAssets.length ? availableAssets.map((asset) => {
+                  const checked = selectedLines.some((line) => line.asset_unit_id === asset.id);
+                  return (
+                    <label
+                      key={asset.id}
+                      className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-emerald-50/50 ${checked ? 'bg-emerald-50/70' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => toggleAssetSelection(asset, e.target.checked)}
+                        className="rounded border-slate-300 text-forest-800 focus:ring-emerald-500"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-bold text-slate-800">{asset.item_name}</span>
+                        <span className="block font-mono text-[10px] text-slate-500">
+                          {asset.asset_code} · {asset.condition} · {asset.location_name}
+                        </span>
+                      </span>
+                      {checked && <Check className="w-4 h-4 text-emerald-700" />}
+                    </label>
+                  );
+                }) : (
+                  <p className="p-4 text-center text-slate-500">
+                    {assetSearch ? 'Tidak ada aset tersedia yang cocok dengan pencarian.' : 'Tidak ada unit fisik tersedia.'}
+                  </p>
+                )}
+              </div>
+              {unselectedVisibleAssets.length > 0 && allVisibleAssetsSelected === false && (
+                <p className="text-[10px] text-slate-500">
+                  {selectedLines.filter((line) => line.asset_unit_id).length} unit fisik sudah dipilih.
+                </p>
+              )}
+            </section>
+
+            <section className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 text-xs">
+              <span className="font-bold text-slate-800 block">Tambah stok kuantitas atau paket:</span>
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2">
+                <select
+                  value={selectedKitId}
+                  onChange={(e) => {
+                    setSelectedKitId(e.target.value);
+                    setSelectedItemTypeId('');
+                  }}
+                  className="px-3 py-2 border rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 font-medium"
+                >
+                  <option value="">-- Pilih Paket Lengkap (opsional) --</option>
+                  {kits.map((k) => (
+                    <option key={k.id} value={k.id}>
+                      {k.name} ({k.kit_code})
                     </option>
                   ))}
                 </select>
-              ) : selectedItem ? (
-                <div className="flex gap-2 items-center">
-                  <input
-                    type="number"
-                    min="1"
-                    value={inputQty}
-                    onChange={(e) => setInputQty(Number(e.target.value))}
-                    className="w-24 px-3 py-2 border rounded-xl font-mono text-center"
-                  />
-                  <span className="text-slate-500 font-semibold">{selectedItem.unit_of_measure}</span>
-                </div>
-              ) : null}
-            </div>
 
-            <button
-              type="button"
-              onClick={handleAddItemLine}
-              disabled={(!selectedItemTypeId && !selectedKitId)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 disabled:opacity-40 text-white font-semibold transition cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Tambahkan ke Daftar Pinjam</span>
-            </button>
+                <select
+                  value={selectedItemTypeId}
+                  onChange={(e) => {
+                    setSelectedItemTypeId(e.target.value);
+                    setSelectedKitId('');
+                  }}
+                  className="px-3 py-2 border rounded-xl bg-white focus:ring-2 focus:ring-emerald-500 font-medium"
+                >
+                  <option value="">-- Pilih Stok Kuantitas --</option>
+                  {items.filter((item) => item.tracking_mode !== 'unique_unit').map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name} ({item.tracking_mode === 'consumable' ? 'Habis Pakai' : item.unit_of_measure})
+                    </option>
+                  ))}
+                </select>
+
+                {selectedItem && (
+                  <div className="flex gap-2 items-center">
+                    <input
+                      type="number"
+                      min="1"
+                      value={inputQty}
+                      onChange={(e) => setInputQty(Number(e.target.value))}
+                      className="w-24 px-3 py-2 border rounded-xl font-mono text-center"
+                    />
+                    <span className="text-slate-500 font-semibold">{selectedItem.unit_of_measure}</span>
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={handleAddItemLine}
+                disabled={!selectedItemTypeId && !selectedKitId}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 disabled:opacity-40 text-white font-semibold transition cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Tambahkan</span>
+              </button>
+            </section>
           </div>
 
           {/* Selected Lines List */}
@@ -618,6 +767,13 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
           </button>
         </div>
       </form>
+      <QRScannerModal
+        isOpen={isAssetScannerOpen}
+        onClose={() => setIsAssetScannerOpen(false)}
+        onSelectResult={() => {}}
+        mode="asset-selection"
+        onSelectAsset={addAssetToSelection}
+      />
     </div>
   );
 };

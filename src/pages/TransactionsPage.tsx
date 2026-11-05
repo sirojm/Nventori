@@ -201,8 +201,12 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
                         )}
                       </td>
                       <td className="p-3.5">
-                        <div className="font-bold text-slate-900">{tx.borrower_name}</div>
-                        <div className="text-[11px] text-slate-500">{tx.borrower_unit}</div>
+                        <div className="font-bold text-slate-900">
+                          {tx.transaction_type === 'internal_usage' ? 'Pemakaian Internal' : tx.borrower_name}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {tx.transaction_type === 'internal_usage' ? 'Tanpa identitas PIC' : tx.borrower_unit}
+                        </div>
                       </td>
                       <td className="p-3.5">
                         <div className="font-medium text-slate-800">{tx.event_name}</div>
@@ -292,10 +296,19 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
             <div className="flex-1 overflow-y-auto p-6 space-y-6 text-xs">
               {/* Borrower Snapshot Box */}
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-                <div className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Snapshot Kontak Peminjam</div>
-                <div className="font-bold text-sm text-slate-900">{selectedTx.borrower_name}</div>
-                <div className="text-slate-700">{selectedTx.borrower_unit}</div>
-                <div className="font-mono text-slate-500">{selectedTx.borrower_phone} • {selectedTx.borrower_email}</div>
+                {selectedTx.transaction_type === 'internal_usage' ? (
+                  <>
+                    <div className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Pemakaian Internal</div>
+                    <div className="text-slate-700">Tidak memerlukan identitas PIC.</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Snapshot Kontak Peminjam</div>
+                    <div className="font-bold text-sm text-slate-900">{selectedTx.borrower_name}</div>
+                    <div className="text-slate-700">{selectedTx.borrower_unit}</div>
+                    <div className="font-mono text-slate-500">{selectedTx.borrower_phone} • {selectedTx.borrower_email}</div>
+                  </>
+                )}
               </div>
 
               {/* Inter-unit Letter Info */}

@@ -101,6 +101,9 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [showInactiveItems, setShowInactiveItems] = useState(false);
+  const [inactiveItems, setInactiveItems] = useState<ItemType[]>([]);
+  const [showInactiveAssets, setShowInactiveAssets] = useState(false);
 
   // Data
   const [items, setItems] = useState<ItemType[]>([]);
@@ -114,6 +117,15 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
   const [showAddItemModal, setShowAddItemModal] = useState(false);
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [showAddAssetModal, setShowAddAssetModal] = useState(false);
+  const [editingAsset, setEditingAsset] = useState<AssetUnit | null>(null);
+  const [assetCatalogItems, setAssetCatalogItems] = useState<ItemType[]>([]);
+  const [assetEditForm, setAssetEditForm] = useState({
+    item_type_id: '',
+    asset_code: '',
+    serial_number: '',
+    location_id: '',
+    condition: 'baik',
+  });
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showEditKitModal, setShowEditKitModal] = useState(false);
@@ -150,7 +162,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
 
   const [newAsset, setNewAsset] = useState({
     item_type_id: '',
-    asset_code: '',
+    quantity: 1,
     serial_number: '',
     location_id: '',
     condition: 'baik',
@@ -169,7 +181,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
     try {
       const [itRes, asRes, spRes, ktRes, catRes, locRes] = await Promise.all([
         api.getItems({ search, category_id: categoryFilter }),
-        api.getAssets({ search }),
+        api.getAssets({ search, include_inactive: showInactiveAssets }),
         api.getStockPools(),
         api.getKits(),
         api.getCategories(true),
@@ -191,7 +203,16 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
 
   useEffect(() => {
     loadAll();
-  }, [search, categoryFilter]);
+  }, [search, categoryFilter, showInactiveAssets]);
+
+  const loadInactiveItems = async () => {
+    try {
+      const result = await api.getItems({ include_inactive: true });
+      setInactiveItems(result.items.filter((item) => !item.is_active));
+    } catch (err) {
+      error(err instanceof Error ? err.message : 'Gagal memuat katalog nonaktif.');
+    }
+  };
 
   const resetCategoryForm = () => {
     setEditingCategoryId(null);
@@ -442,31 +463,126 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
 
   const handleCreateAsset = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newAsset.item_type_id || !newAsset.asset_code || !newAsset.location_id) {
-      error('Harap lengkapi barang, kode aset, dan lokasi simpan.');
+    if (!newAsset.item_type_id || !newAsset.location_id ||
+      !Number.isInteger(newAsset.quantity) || newAsset.quantity < 1 || newAsset.quantity > 500) {
+      error('Pilih barang dan lokasi, serta masukkan jumlah unit antara 1 dan 500.');
       return;
     }
     try {
       const res = await api.createAsset({
-        ...newAsset,
         item_type_id: Number(newAsset.item_type_id),
+        quantity: newAsset.quantity,
+        serial_number: newAsset.quantity === 1 ? newAsset.serial_number : '',
         location_id: Number(newAsset.location_id),
+        condition: newAsset.condition,
       });
       if (res.success) {
-        success(res.message);
+        const codeSummary = res.asset_codes?.length
+          ? ` Kode pertama: ${res.asset_codes[0]}${res.asset_codes.length > 1 ? `, terakhir: ${res.asset_codes[res.asset_codes.length - 1]}` : ''}.`
+          : '';
+        success(`${res.message}${codeSummary}`);
         setShowAddAssetModal(false);
+        setActiveTab('assets');
         setNewAsset({
           item_type_id: '',
-          asset_code: '',
+          quantity: 1,
           serial_number: '',
           location_id: '',
           condition: 'baik',
           notes: '',
         });
-        loadAll();
+        if (search) setSearch('');
+        else await loadAll();
       }
     } catch (err: any) {
       error(err.message || 'Gagal menambahkan unit fisik.');
+    }
+  };
+
+  const openEditAsset = async (asset: AssetUnit) => {
+    try {
+      const result = await api.getItems({ tracking_mode: 'unique_unit' });
+      setAssetCatalogItems(result.items);
+      setEditingAsset(asset);
+      setAssetEditForm({
+        item_type_id: String(asset.item_type_id),
+        asset_code: asset.asset_code,
+        serial_number: asset.serial_number || '',
+        location_id: String(asset.location_id),
+        condition: asset.condition,
+      });
+    } catch (err) {
+      error(err instanceof Error ? err.message : 'Gagal memuat katalog aset.');
+    }
+  };
+
+  const handleUpdateAsset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingAsset || !assetEditForm.item_type_id || !assetEditForm.asset_code.trim() ||
+      !assetEditForm.location_id) {
+      error('Barang, kode aset, dan lokasi wajib diisi.');
+      return;
+    }
+
+    try {
+      const res = await api.updateAsset(editingAsset.id, {
+        item_type_id: Number(assetEditForm.item_type_id),
+        asset_code: assetEditForm.asset_code.trim(),
+        serial_number: assetEditForm.serial_number.trim(),
+        location_id: Number(assetEditForm.location_id),
+        condition: assetEditForm.condition,
+      });
+      if (res.success) {
+        success(res.message);
+        setEditingAsset(null);
+        await loadAll();
+      }
+    } catch (err) {
+      error(err instanceof Error ? err.message : 'Gagal memperbarui data aset fisik.');
+    }
+  };
+
+  const handleDeleteItem = async (item: ItemType) => {
+    if (!window.confirm(`Hapus katalog "${item.name}"? Katalog yang masih memiliki unit aktif atau stok tidak dapat dihapus. Riwayat tidak akan dihapus.`)) return;
+    try {
+      const result = await api.deleteItem(item.id);
+      success(result.message);
+      await loadAll();
+      if (showInactiveItems) await loadInactiveItems();
+    } catch (err) {
+      error(err instanceof Error ? err.message : 'Gagal menghapus katalog.');
+    }
+  };
+
+  const handleRestoreItem = async (item: ItemType) => {
+    try {
+      const result = await api.restoreItem(item.id);
+      success(result.message);
+      await loadAll();
+      await loadInactiveItems();
+    } catch (err) {
+      error(err instanceof Error ? err.message : 'Gagal mengaktifkan kembali katalog.');
+    }
+  };
+
+  const handleDeleteAsset = async (asset: AssetUnit) => {
+    if (!window.confirm(`Hapus aset ${asset.asset_code} dari daftar aktif? Riwayat stok dan transaksi tetap tersimpan.`)) return;
+    try {
+      const result = await api.deleteAsset(asset.id);
+      success(result.message);
+      await loadAll();
+    } catch (err) {
+      error(err instanceof Error ? err.message : 'Gagal menghapus aset fisik.');
+    }
+  };
+
+  const handleRestoreAsset = async (asset: AssetUnit) => {
+    try {
+      const result = await api.restoreAsset(asset.id);
+      success(result.message);
+      await loadAll();
+    } catch (err) {
+      error(err instanceof Error ? err.message : 'Gagal mengaktifkan kembali aset fisik.');
     }
   };
 
@@ -539,7 +655,17 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
               <span>Tambah Jenis Barang</span>
             </button>
             <button
-              onClick={() => setShowAddAssetModal(true)}
+              onClick={() => {
+                setNewAsset({
+                  item_type_id: '',
+                  quantity: 1,
+                  serial_number: '',
+                  location_id: '',
+                  condition: 'baik',
+                  notes: '',
+                });
+                setShowAddAssetModal(true);
+              }}
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-forest-800 hover:bg-forest-900 text-white text-xs font-semibold shadow-sm transition cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -610,8 +736,23 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
 
       {/* Tab 1: Item Types Catalog */}
       {activeTab === 'items' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {items.map((it) => (
+        <div className="space-y-4">
+          {canManage && (
+            <div className="flex justify-end">
+              <button
+                onClick={async () => {
+                  const nextValue = !showInactiveItems;
+                  setShowInactiveItems(nextValue);
+                  if (nextValue) await loadInactiveItems();
+                }}
+                className="text-xs font-semibold text-slate-600 hover:text-forest-800"
+              >
+                {showInactiveItems ? 'Sembunyikan katalog nonaktif' : 'Tampilkan katalog nonaktif'}
+              </button>
+            </div>
+          )}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {items.map((it) => (
             <div key={it.id} className="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm flex flex-col justify-between space-y-3">
               <div>
                 <div className="flex items-center justify-between">
@@ -647,7 +788,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
                   </div>
                 </div>
                 {canManage && (
-                  <div className={`grid gap-2 ${it.tracking_mode === 'unique_unit' ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                  <div className={`grid gap-2 ${it.tracking_mode === 'unique_unit' ? 'grid-cols-2' : 'grid-cols-3'}`}>
                     {it.tracking_mode !== 'unique_unit' && (
                       <button
                         onClick={() => {
@@ -669,17 +810,61 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
                       <Edit className="w-3 h-3" />
                       Edit Katalog
                     </button>
+                    <button
+                      onClick={() => handleDeleteItem(it)}
+                      className="w-full inline-flex justify-center items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-200 hover:bg-red-50 text-red-700 font-semibold text-[11px] transition cursor-pointer"
+                      aria-label={`Hapus katalog ${it.name}`}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      Hapus
+                    </button>
                   </div>
                 )}
               </div>
             </div>
           ))}
+          </div>
+          {canManage && showInactiveItems && inactiveItems.length > 0 && (
+            <section className="space-y-3">
+              <h3 className="text-sm font-bold text-slate-700">Katalog nonaktif</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {inactiveItems.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between gap-3 p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                    <div className="min-w-0">
+                      <div className="font-bold text-sm text-slate-800 truncate">{item.name}</div>
+                      <div className="text-[10px] font-mono text-slate-500">{item.code}</div>
+                    </div>
+                    <button
+                      onClick={() => handleRestoreItem(item)}
+                      className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-white text-slate-700 font-semibold text-[11px]"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      Aktifkan
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       )}
 
       {/* Tab 2: Unique Physical Assets */}
       {activeTab === 'assets' && (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          {canManage && (
+            <div className="flex justify-end px-4 py-3 border-b border-slate-100">
+              <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showInactiveAssets}
+                  onChange={(e) => setShowInactiveAssets(e.target.checked)}
+                  className="rounded border-slate-300 text-forest-800 focus:ring-emerald-500"
+                />
+                Tampilkan aset nonaktif
+              </label>
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-xs text-left">
               <thead>
@@ -689,7 +874,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
                   <th className="p-3.5">Lokasi Simpan</th>
                   <th className="p-3.5">Kondisi</th>
                   <th className="p-3.5">Status</th>
-                  <th className="p-3.5 text-right">Label QR</th>
+                  <th className="p-3.5 text-right">{canManage ? 'Aksi' : 'Label QR'}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -722,6 +907,36 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
                       </span>
                     </td>
                     <td className="p-3.5 text-right">
+                      {canManage && asset.status === 'nonaktif' ? (
+                        <button
+                          onClick={() => handleRestoreAsset(asset)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-700 font-semibold text-[11px] transition cursor-pointer mr-2"
+                          title="Aktifkan kembali aset"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Aktifkan</span>
+                        </button>
+                      ) : canManage && (
+                        <button
+                          onClick={() => openEditAsset(asset)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-700 font-semibold text-[11px] transition cursor-pointer mr-2"
+                          title="Edit data aset"
+                        >
+                          <Edit className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Edit</span>
+                        </button>
+                      )}
+                      {canManage && asset.status !== 'nonaktif' && (
+                        <button
+                          onClick={() => handleDeleteAsset(asset)}
+                          disabled={asset.status !== 'tersedia'}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-red-200 hover:bg-red-50 text-red-700 font-semibold text-[11px] transition cursor-pointer mr-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={asset.status === 'tersedia' ? 'Hapus aset dari daftar aktif' : 'Aset yang sedang dipinjam atau dipesan tidak dapat dihapus'}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Hapus</span>
+                        </button>
+                      )}
                       <button
                         onClick={() => onOpenLabelModal(asset)}
                         className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-700 font-semibold text-[11px] transition cursor-pointer"
@@ -854,8 +1069,8 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
 
       {/* Modal: Import Catalog CSV */}
       {showImportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
-          <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-5">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-2xl max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 sm:p-6 space-y-5">
             <div className="flex items-center justify-between border-b pb-3">
               <div>
                 <h3 className="font-bold text-slate-900 text-sm">Import Katalog Barang</h3>
@@ -946,8 +1161,8 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
 
       {/* Modal: Edit Kit */}
       {showEditKitModal && editingKit && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
-          <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-2xl max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 sm:p-6 space-y-4">
             <div className="flex items-center justify-between border-b pb-3">
               <div>
                 <h3 className="font-bold text-slate-900 text-sm">Edit Paket & Kelengkapan</h3>
@@ -1164,8 +1379,8 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
 
       {/* Modal: Manage Categories */}
       {showCategoryModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
-          <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-5">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-2xl max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 sm:p-6 space-y-5">
             <div className="flex items-center justify-between border-b pb-3">
               <div>
                 <h3 className="font-bold text-slate-900 text-sm">Kelola Kategori Katalog</h3>
@@ -1287,8 +1502,8 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
 
       {/* Modal: Add Item Type */}
       {showAddItemModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
-          <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-md max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 sm:p-6 space-y-4">
             <div className="flex items-center justify-between border-b pb-3">
               <h3 className="font-bold text-slate-900 text-sm">{editingItemId ? 'Edit Katalog Barang' : 'Tambah Jenis Barang Baru'}</h3>
               <button
@@ -1420,8 +1635,8 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
 
       {/* Modal: Add Physical Asset Unit */}
       {showAddAssetModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
-          <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-md max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 sm:p-6 space-y-4">
             <div className="flex items-center justify-between border-b pb-3">
               <h3 className="font-bold text-slate-900 text-sm">Registrasi Unit Aset Fisik Baru</h3>
               <button onClick={() => setShowAddAssetModal(false)} className="text-slate-400 hover:text-slate-600">
@@ -1434,7 +1649,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
                 <select
                   required
                   value={newAsset.item_type_id}
-                  onChange={(e) => setNewAsset({ ...newAsset, item_type_id: e.target.value })}
+                  onChange={(e) => setNewAsset({ ...newAsset, item_type_id: e.target.value, serial_number: '' })}
                   className="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500"
                 >
                   <option value="">Pilih Jenis Barang</option>
@@ -1443,20 +1658,29 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
                   ))}
                 </select>
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Jumlah Unit Fisik:</label>
+                <input
+                  type="number"
+                  required
+                  min={1}
+                  max={500}
+                  step={1}
+                  value={newAsset.quantity}
+                  onChange={(e) => setNewAsset({
+                    ...newAsset,
+                    quantity: Number(e.target.value),
+                    serial_number: e.target.value === '1' ? newAsset.serial_number : '',
+                  })}
+                  className="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500"
+                />
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Kode aset dibuat otomatis dari kode katalog (contoh: {items.find((item) => String(item.id) === newAsset.item_type_id)?.code || 'KODE-KATALOG'}-001), berurutan untuk setiap unit. Maksimal 500 per pendaftaran.
+                </p>
+              </div>
+              {newAsset.quantity === 1 && (
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Kode Aset Unik:</label>
-                  <input
-                    type="text"
-                    required
-                    value={newAsset.asset_code}
-                    onChange={(e) => setNewAsset({ ...newAsset, asset_code: e.target.value })}
-                    placeholder="NV-CAM-003"
-                    className="w-full px-3 py-2 border rounded-xl font-mono focus:ring-2 focus:ring-emerald-500"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Nomor Seri Pabrik:</label>
+                  <label className="block font-semibold text-slate-700 mb-1">Nomor Seri Pabrik (opsional):</label>
                   <input
                     type="text"
                     value={newAsset.serial_number}
@@ -1465,7 +1689,10 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
                     className="w-full px-3 py-2 border rounded-xl font-mono focus:ring-2 focus:ring-emerald-500"
                   />
                 </div>
-              </div>
+              )}
+              <p className="rounded-lg bg-slate-50 p-2 text-[10px] text-slate-600">
+                Barang yang cukup dilacak berdasarkan jumlah, seperti kursi identik, tidak perlu didaftarkan sebagai unit fisik. Gunakan mode <strong>Stok Kuantitas</strong> pada katalog.
+              </p>
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Lokasi Penyimpanan:</label>
                 <select
@@ -1504,7 +1731,98 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
                   type="submit"
                   className="px-4 py-2 bg-forest-800 hover:bg-forest-900 text-white font-semibold rounded-xl"
                 >
-                  Registrasi Aset
+                  Registrasi {newAsset.quantity > 0 ? newAsset.quantity : ''} Unit
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editingAsset && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-md max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 sm:p-6 space-y-4">
+            <div className="flex items-center justify-between border-b pb-3">
+              <div>
+                <h3 className="font-bold text-slate-900 text-sm">Edit Data Aset Fisik</h3>
+                <p className="text-[10px] text-slate-500 mt-1">Status transaksi tidak dapat diubah dari formulir ini.</p>
+              </div>
+              <button onClick={() => setEditingAsset(null)} className="text-slate-400 hover:text-slate-600" aria-label="Tutup">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleUpdateAsset} className="space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Jenis Barang:</label>
+                <select
+                  required
+                  value={assetEditForm.item_type_id}
+                  onChange={(e) => setAssetEditForm({ ...assetEditForm, item_type_id: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500"
+                >
+                  <option value="">Pilih Jenis Barang</option>
+                  {assetCatalogItems.map((item) => (
+                    <option key={item.id} value={item.id}>{item.name} ({item.code})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Kode Aset:</label>
+                <input
+                  type="text"
+                  required
+                  value={assetEditForm.asset_code}
+                  onChange={(e) => setAssetEditForm({ ...assetEditForm, asset_code: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-xl font-mono focus:ring-2 focus:ring-emerald-500"
+                />
+                <p className="text-[10px] text-slate-500 mt-1">QR aset akan mengikuti kode yang disimpan.</p>
+              </div>
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Nomor Seri Pabrik (opsional):</label>
+                <input
+                  type="text"
+                  value={assetEditForm.serial_number}
+                  onChange={(e) => setAssetEditForm({ ...assetEditForm, serial_number: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-xl font-mono focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Lokasi Penyimpanan:</label>
+                <select
+                  required
+                  value={assetEditForm.location_id}
+                  disabled={editingAsset.status === 'dipakai' || editingAsset.status === 'dipesan'}
+                  onChange={(e) => setAssetEditForm({ ...assetEditForm, location_id: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500 disabled:bg-slate-100 disabled:text-slate-500"
+                >
+                  <option value="">Pilih Lokasi</option>
+                  {locations.map((location) => (
+                    <option key={location.id} value={location.id}>{location.name}</option>
+                  ))}
+                </select>
+                {(editingAsset.status === 'dipakai' || editingAsset.status === 'dipesan') && (
+                  <p className="text-[10px] text-amber-700 mt-1">Lokasi tidak dapat diubah saat aset sedang dipinjam atau dipesan.</p>
+                )}
+              </div>
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Kondisi:</label>
+                <select
+                  value={assetEditForm.condition}
+                  onChange={(e) => setAssetEditForm({ ...assetEditForm, condition: e.target.value as AssetUnit['condition'] })}
+                  className="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500"
+                >
+                  <option value="baik">Baik</option>
+                  <option value="rusak_ringan">Rusak Ringan</option>
+                  <option value="rusak_berat">Rusak Berat</option>
+                  <option value="perawatan">Dalam Perawatan</option>
+                </select>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setEditingAsset(null)} className="px-4 py-2 font-semibold text-slate-600 hover:text-slate-800">
+                  Batal
+                </button>
+                <button type="submit" className="px-4 py-2 bg-forest-800 hover:bg-forest-900 text-white font-semibold rounded-xl">
+                  Simpan Perubahan
                 </button>
               </div>
             </form>
@@ -1514,8 +1832,8 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
 
       {/* Modal: Adjust Stock Pool */}
       {showAdjustModal && selectedPool && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
-          <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="relative w-full max-w-md max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 sm:p-6 space-y-4">
             <div className="flex items-center justify-between border-b pb-3">
               <h3 className="font-bold text-slate-900 text-sm">Penyesuaian Stok Kuantitas</h3>
               <button onClick={() => setShowAdjustModal(false)} className="text-slate-400 hover:text-slate-600">

@@ -23,6 +23,27 @@ try {
 export function initDatabase() {
   const schema = fs.readFileSync(schemaPath, 'utf8');
   db.exec(schema);
+
+  const receiptTokenColumns = db.prepare('PRAGMA table_info(receipt_verification_tokens)').all();
+  if (receiptTokenColumns.some(column => column.name === 'token_hash')) {
+    db.exec(`
+      DROP TABLE receipt_verification_tokens;
+      CREATE TABLE receipt_verification_tokens (
+        token TEXT PRIMARY KEY,
+        transaction_id INTEGER NOT NULL,
+        document_type TEXT NOT NULL CHECK(document_type IN ('handover', 'return')),
+        event_id INTEGER NOT NULL,
+        issued_by_id INTEGER NOT NULL,
+        issued_by_name TEXT NOT NULL,
+        issued_at DATETIME NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(document_type, event_id),
+        FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE,
+        FOREIGN KEY (issued_by_id) REFERENCES users(id)
+      );
+    `);
+  }
+
   console.log('[DB] Nventori SQLite Database initialized successfully.');
 }
 

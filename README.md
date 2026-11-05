@@ -10,21 +10,23 @@ Dirancang dan dibangun 100% mengikuti spesifikasi **[Nventori_Blueprint_v1_5.md]
 
 1. **Tepat Tiga Level Pengguna**:
    - **Super Admin**: Hak akses penuh, audit log, dan pengelolaan akun petugas.
-   - **Admin Inventaris**: Kelola kategori, lokasi, katalog jenis barang, registrasi aset fisik, penyesuaian stok kuantitas, dan paket kelengkapan.
+   - **Admin Inventaris**: Kelola kategori, lokasi, katalog jenis barang, registrasi dan koreksi data aset fisik dengan kode aset otomatis dari kode katalog (satu kode unik per unit), penghapusan nonaktif yang mempertahankan riwayat, penyesuaian stok kuantitas, dan paket kelengkapan.
    - **Operator**: Kelola buku kontak peminjam, catat peminjaman (internal/antarunit), serah terima, pemeriksaan checklist kembali, dan cetak bukti.
 
 2. **Peminjam Tanpa Akun / Login**:
    - Peminjam (PIC) tidak perlu mendaftar atau login. Seluruh transaksi dicatat oleh petugas operator.
+   - Jenis transaksi dipilih lebih dahulu; identitas PIC wajib untuk pinjaman antarunit dan tidak diperlukan untuk pemakaian internal.
    - Kontak peminjam (Nama, Unit/Instansi, No HP/WA, Email aktif) disimpan ke buku kontak dan dapat langsung dipilih ulang tanpa mengetik ulang.
    - Transaksi menyimpan *snapshot* identitas peminjam pada saat pencatatan.
 
 3. **Tanpa Alur Approval dalam Aplikasi**:
    - Pemakaian internal dan pinjaman antarunit diproses langsung oleh operator.
    - Untuk pinjaman antarunit, surat permohonan telah disetujui di luar aplikasi; petugas mencatat nomor surat, tanggal surat, unit pengirim, dan catatan arsip sebagai dokumen pendukung.
+   - Pemilihan alat mendukung ceklis multi-unit atau pemindaian berulang QR setelah alat disiapkan; reservasi dikonfirmasi saat transaksi disimpan.
 
 4. **Tiga Mode Pelacakan Inventaris**:
-   - **Unit Unik**: Memiliki kode aset unik dan QR code (laptop, kamera, drone, proyektor).
-   - **Kuantitas Dapat Kembali**: Pelacakan jumlah/pool dan kondisi (kursi lipat, kabel HDMI).
+   - **Unit Unik**: Jumlah unit fisik dapat didaftarkan sekaligus; tiap unit mendapat kode aset dan QR unik (laptop, kamera, drone, proyektor).
+   - **Kuantitas Dapat Kembali**: Pelacakan jumlah/pool dan kondisi tanpa kode per unit (kursi lipat, kabel HDMI).
    - **Habis Pakai**: Pengeluaran konsumsi tanpa kewajiban pengembalian (baterai AA).
 
 5. **Paket Kelengkapan (Kits)**:
@@ -97,11 +99,28 @@ Aplikasi telah dilengkapi seeder basis data awal dengan tiga level akun:
    npm run dev
    ```
    Perintah ini akan menjalankan dua server secara bersamaan:
-   - **Frontend Vite**: `http://localhost:5173`
+   - **Frontend Vite**: `https://localhost:5173` (sertifikat HTTPS pengembangan dibuat otomatis)
    - **Backend API Express**: `http://localhost:3001`
 
 5. Buka peramban (browser) di alamat:
-   **[http://localhost:5173](http://localhost:5173)**
+   **[https://localhost:5173](https://localhost:5173)**
+
+### Mencoba Kamera dari HP
+
+1. Pastikan komputer dan HP menggunakan Wi-Fi yang sama, lalu jalankan `npm run dev`. Buka alamat `https://<IP-komputer>:5173` dari HP (misalnya `https://192.168.100.72:5173`).
+2. Sertifikat lokal otomatis dipercaya komputer, tetapi HP juga perlu mempercayai sertifikat root pengembangan. Salin hanya `rootCA.pem` dari folder `%USERPROFILE%\.vite-plugin-mkcert` ke HP; jangan salin atau bagikan `rootCA-key.pem`.
+3. Pasang `rootCA.pem` sebagai sertifikat CA di pengaturan keamanan HP, kemudian buka ulang alamat HTTPS dan izinkan akses kamera untuk browser.
+4. Di Android, pemasangan sertifikat biasanya ada di **Setelan > Keamanan > Enkripsi & kredensial > Instal sertifikat > Sertifikat CA**. Di iPhone, pasang profil sertifikat lalu aktifkan kepercayaan penuh pada sertifikat itu di **Pengaturan > Umum > Mengenai > Pengaturan Kepercayaan Sertifikat**.
+
+Jika izin sebelumnya ditolak, ubah izin Kamera situs di pengaturan browser ke **Izinkan**, lalu muat ulang halaman.
+
+Bukti serah terima dan pengembalian menampilkan QR ringkas untuk memverifikasi catatan transaksi, waktu, dan petugas penerbit pada server. Verifikasi QR merupakan pemeriksaan internal sistem dan **bukan Tanda Tangan Elektronik (TTE) tersertifikasi**.
+
+### Mengubah Header dan Logo Bukti
+
+- Ubah nama organisasi, unit, keterangan, serta lokasi logo pada `src/config/receiptBranding.ts`.
+- Letakkan berkas logo UTIPD berformat PNG di `public/utipd-logo.png` (folder `public` dapat dibuat jika belum ada). Gunakan logo transparan dengan tinggi/lebar seimbang agar tercetak rapi.
+- QR validasi berada di blok tanda tangan petugas. QR menggunakan kode acak singkat; pemindaian membutuhkan alamat aplikasi yang dapat dijangkau dari perangkat pemindai. QR ini bukan TTE tersertifikasi.
 
 ---
 

@@ -43,6 +43,39 @@
 
 /* Print styling */
 @media print {
+  body.receipt-printing * {
+    visibility: hidden !important;
+  }
+  body.receipt-printing .receipt-print-root,
+  body.receipt-printing .receipt-print-root * {
+    visibility: visible !important;
+  }
+  body.receipt-printing .receipt-print-root {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: #FFFFFF !important;
+  }
+  body.receipt-printing .receipt-print-dialog {
+    display: block !important;
+    width: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+  body.receipt-printing .receipt-print-content {
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+  }
   body {
     background: #FFFFFF !important;
     color: #000000 !important;
@@ -52,5 +85,13 @@
   }
   .print-only {
     display: block !important;
+  }
+  body.receipt-printing .receipt-print-content tr,
+  body.receipt-printing .receipt-print-content .grid {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  body.receipt-printing .receipt-print-content thead {
+    display: table-header-group;
   }
 }

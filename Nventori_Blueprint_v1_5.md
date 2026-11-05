@@ -36,8 +36,8 @@ Ukuran tim, jumlah pengguna bersamaan, volume barang, server akhir, SMTP, serta 
 | Login dan akses | Login, logout, reset password, pengelolaan pengguna, peran dan cakupan unit | Request tanpa izin ditolak oleh server |
 | Master inventaris | Kategori dinamis, lokasi, unit, jenis barang, unit fisik, stok kuantitas, foto, kondisi | Kode aset unik; riwayat tidak hilang saat data dinonaktifkan |
 | Pembaruan inventaris | Barang masuk, koreksi stok, mutasi lokasi, perubahan kondisi, penonaktifan | Semua perubahan memiliki alasan dan jejak operator |
-| Pemakaian internal | Jadwal, PIC, pemilihan barang, serah terima dan kembali | Ketersediaan berkurang sesuai barang yang keluar |
-| Kontak peminjam | Nama, unit/instansi, HP/WA, email aktif; pencarian dan pemakaian ulang | Peminjam ulang dipilih tanpa akun atau mengetik ulang |
+| Pemakaian internal | Jenis transaksi dipilih lebih dahulu; jadwal dan barang, PIC opsional, serah terima dan kembali | Ketersediaan berkurang sesuai barang yang keluar |
+| Kontak peminjam | Nama, unit/instansi, HP/WA, email aktif; pencarian dan pemakaian ulang untuk pinjaman antarunit | Peminjam ulang dipilih tanpa akun atau mengetik ulang |
 | Paket kelengkapan | Paket fisik, daftar komponen, jumlah dan kondisi | Kelengkapan diperiksa saat keluar dan kembali |
 | Pinjaman antarunit | Petugas mencatat permintaan dan referensi surat, reservasi serta penyerahan tanpa persetujuan aplikasi | Aset yang sama tidak dialokasikan pada jadwal bertabrakan |
 | Pengembalian | Scan QR transaksi, checklist, jumlah, kondisi, pengembalian sebagian | Hanya barang yang dikonfirmasi diterima tercatat kembali |
@@ -74,7 +74,7 @@ Pemilik produk/pengelola inventaris menetapkan tata kelola inventaris dan meneri
 
 Setiap akun memiliki satu dari tiga level tersebut. Hak bersifat bertingkat: Super Admin mencakup Admin Inventaris, dan Admin Inventaris mencakup Operator. Tidak ada level Penyetuju/Kepala, Pimpinan/Auditor atau Peminjam. Fitur laporan dan audit diakses melalui tiga level ini sesuai kewenangannya, bukan melalui role tambahan.
 
-Peminjam/PIC adalah kontak tanpa akun/login. Semua transaksi dicatat petugas. Otorisasi tetap diperiksa server pada setiap aksi dan objek, termasuk jika pengguna mengganti ID pada URL. Perubahan level atau penonaktifan akun berlaku pada operasi berikutnya.
+Peminjam/PIC adalah kontak tanpa akun/login. Semua transaksi dicatat petugas; pemakaian internal tidak mewajibkan identitas PIC, sedangkan pinjaman antarunit tetap memerlukannya. Otorisasi tetap diperiksa server pada setiap aksi dan objek, termasuk jika pengguna mengganti ID pada URL. Perubahan level atau penonaktifan akun berlaku pada operasi berikutnya.
 
 Bootstrap admin dilakukan melalui proses instalasi; tidak menyediakan password universal permanen. Password disimpan menggunakan hash, login dibatasi percobaannya, sesi menggunakan cookie aman, dan reset password memakai token terbatas waktu. Tindakan keluar/kembali memerlukan sesi dan perlindungan CSRF.
 

@@ -112,17 +112,17 @@ router.post('/locations', authenticate, authorize(['admin_inventaris']), (req, r
 
 // GET /api/items (Item types catalog)
 router.get('/items', authenticate, (req, res) => {
-  const { search, category_id, tracking_mode } = req.query;
+  const { search, category_id, tracking_mode, include_inactive } = req.query;
   let sql = `
     SELECT it.*, c.name as category_name,
            (SELECT COUNT(*) FROM asset_units WHERE item_type_id = it.id AND status = 'tersedia') as units_available,
            (SELECT COUNT(*) FROM asset_units WHERE item_type_id = it.id AND status = 'dipakai') as units_in_use,
-           (SELECT COUNT(*) FROM asset_units WHERE item_type_id = it.id) as units_total,
+           (SELECT COUNT(*) FROM asset_units WHERE item_type_id = it.id AND status != 'nonaktif') as units_total,
            (SELECT SUM(quantity_total) FROM stock_pools WHERE item_type_id = it.id) as pool_total,
            (SELECT SUM(quantity_available) FROM stock_pools WHERE item_type_id = it.id) as pool_available
     FROM item_types it
     JOIN categories c ON it.category_id = c.id
-    WHERE it.is_active = 1
+    WHERE 1=1 ${include_inactive === 'true' ? '' : "AND it.is_active = 1"}
   `;
   const params = [];
 
@@ -418,9 +418,69 @@ router.put('/items/:id', authenticate, authorize(['admin_inventaris']), (req, re
   }
 });
 
+// DELETE /api/items/:id (Archive catalog while preserving its history)
+router.delete('/items/:id', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const itemId = Number(req.params.id);
+  if (!Number.isSafeInteger(itemId) || itemId < 1) {
+    return res.status(400).json({ success: false, message: 'ID katalog tidak valid.' });
+  }
+
+  const item = query.get('SELECT id, name, code, is_active FROM item_types WHERE id = ?', [itemId]);
+  if (!item || !item.is_active) {
+    return res.status(404).json({ success: false, message: 'Katalog aktif tidak ditemukan.' });
+  }
+
+  const activeAsset = query.get(
+    "SELECT asset_code FROM asset_units WHERE item_type_id = ? AND status != 'nonaktif' LIMIT 1",
+    [itemId]
+  );
+  if (activeAsset) {
+    return res.status(409).json({
+      success: false,
+      message: `Katalog masih memiliki unit aktif (${activeAsset.asset_code}). Hapus/nonaktifkan unit fisik tersebut terlebih dahulu.`,
+    });
+  }
+
+  const stock = query.get(
+    `SELECT 1 FROM stock_pools
+     WHERE item_type_id = ? AND (
+       quantity_total > 0 OR quantity_available > 0 OR quantity_reserved > 0 OR quantity_checked_out > 0
+     ) LIMIT 1`,
+    [itemId]
+  );
+  if (stock) {
+    return res.status(409).json({
+      success: false,
+      message: 'Katalog masih memiliki stok kuantitas. Sesuaikan seluruh stok menjadi nol terlebih dahulu.',
+    });
+  }
+
+  query.run('UPDATE item_types SET is_active = 0 WHERE id = ?', [itemId]);
+  logAudit(req.user.id, req.user.name, req.user.role, 'DEACTIVATE', 'ITEM_TYPE', itemId, {
+    name: item.name,
+    code: item.code,
+  });
+  res.json({ success: true, message: 'Katalog dihapus dari daftar aktif. Riwayat dan data terkait tetap tersimpan.' });
+});
+
+// POST /api/items/:id/restore
+router.post('/items/:id/restore', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const itemId = Number(req.params.id);
+  if (!Number.isSafeInteger(itemId) || itemId < 1) {
+    return res.status(400).json({ success: false, message: 'ID katalog tidak valid.' });
+  }
+
+  const result = query.run('UPDATE item_types SET is_active = 1 WHERE id = ? AND is_active = 0', [itemId]);
+  if (!result.changes) {
+    return res.status(404).json({ success: false, message: 'Katalog nonaktif tidak ditemukan.' });
+  }
+  logAudit(req.user.id, req.user.name, req.user.role, 'RESTORE', 'ITEM_TYPE', itemId, {});
+  res.json({ success: true, message: 'Katalog berhasil diaktifkan kembali.' });
+});
+
 // GET /api/assets (Physical unique units)
 router.get('/assets', authenticate, (req, res) => {
-  const { item_type_id, location_id, status, condition, search } = req.query;
+  const { item_type_id, location_id, status, condition, search, include_inactive } = req.query;
   let sql = `
     SELECT au.*, it.name as item_name, it.brand_model, it.unit_of_measure, c.name as category_name,
            l.name as location_name, ou.name as unit_name
@@ -433,6 +493,9 @@ router.get('/assets', authenticate, (req, res) => {
   `;
   const params = [];
 
+  if (include_inactive !== 'true' && !status) {
+    sql += " AND au.status != 'nonaktif'";
+  }
   if (item_type_id) {
     sql += ' AND au.item_type_id = ?';
     params.push(item_type_id);
@@ -458,6 +521,246 @@ router.get('/assets', authenticate, (req, res) => {
   sql += ' ORDER BY au.id DESC';
   const assets = query.all(sql, params);
   res.json({ success: true, assets });
+});
+
+// DELETE /api/assets/:id (Soft-delete a physical asset)
+router.delete('/assets/:id', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const assetId = Number(req.params.id);
+  if (!Number.isSafeInteger(assetId) || assetId < 1) {
+    return res.status(400).json({ success: false, message: 'ID aset tidak valid.' });
+  }
+  const asset = query.get('SELECT id, asset_code, item_type_id, status FROM asset_units WHERE id = ?', [assetId]);
+  if (!asset || asset.status === 'nonaktif') {
+    return res.status(404).json({ success: false, message: 'Unit aset aktif tidak ditemukan.' });
+  }
+  if (asset.status !== 'tersedia') {
+    return res.status(409).json({ success: false, message: 'Aset yang sedang dipinjam atau dipesan tidak dapat dihapus.' });
+  }
+  const kitReference = query.get('SELECT 1 FROM kit_components WHERE asset_unit_id = ? LIMIT 1', [assetId]);
+  if (kitReference) {
+    return res.status(409).json({ success: false, message: 'Aset masih tercatat sebagai komponen paket. Lepaskan aset dari paket sebelum menghapusnya.' });
+  }
+
+  query.run("UPDATE asset_units SET status = 'nonaktif' WHERE id = ?", [assetId]);
+  logAudit(req.user.id, req.user.name, req.user.role, 'DELETE_ASSET', 'ASSET_UNIT', assetId, {
+    asset_code: asset.asset_code,
+    item_type_id: asset.item_type_id,
+  });
+  res.json({ success: true, message: `Aset ${asset.asset_code} dihapus dari daftar aktif. Riwayat tetap tersimpan.` });
+});
+
+// POST /api/assets/:id/restore
+router.post('/assets/:id/restore', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const assetId = Number(req.params.id);
+  if (!Number.isSafeInteger(assetId) || assetId < 1) {
+    return res.status(400).json({ success: false, message: 'ID aset tidak valid.' });
+  }
+
+  const asset = query.get(
+    `SELECT au.id, au.asset_code, au.item_type_id, au.location_id
+     FROM asset_units au
+     JOIN item_types it ON au.item_type_id = it.id
+     JOIN locations l ON au.location_id = l.id
+     WHERE au.id = ? AND au.status = 'nonaktif' AND it.is_active = 1 AND l.is_active = 1`,
+    [assetId]
+  );
+  if (!asset) {
+    return res.status(404).json({ success: false, message: 'Aset nonaktif dengan katalog dan lokasi aktif tidak ditemukan.' });
+  }
+
+  query.run("UPDATE asset_units SET status = 'tersedia' WHERE id = ?", [assetId]);
+  logAudit(req.user.id, req.user.name, req.user.role, 'RESTORE_ASSET', 'ASSET_UNIT', assetId, {
+    asset_code: asset.asset_code,
+  });
+  res.json({ success: true, message: `Aset ${asset.asset_code} berhasil diaktifkan kembali.` });
+});
+
+// PUT /api/assets/:id (Correct physical asset data)
+router.put('/assets/:id', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const assetId = Number(req.params.id);
+  const { item_type_id, asset_code, serial_number, location_id, condition } = req.body;
+  const itemTypeId = Number(item_type_id);
+  const locationId = Number(location_id);
+  const normalizedCode = typeof asset_code === 'string' ? asset_code.trim().toUpperCase() : '';
+  const normalizedSerial = typeof serial_number === 'string' ? serial_number.trim() : '';
+
+  if (!Number.isSafeInteger(assetId) || assetId < 1 ||
+    !Number.isSafeInteger(itemTypeId) || itemTypeId < 1 ||
+    !Number.isSafeInteger(locationId) || locationId < 1 ||
+    !normalizedCode ||
+    !['baik', 'rusak_ringan', 'rusak_berat', 'perawatan'].includes(condition)) {
+    return res.status(400).json({ success: false, message: 'Data barang, kode aset, lokasi, atau kondisi tidak valid.' });
+  }
+
+  const asset = query.get('SELECT * FROM asset_units WHERE id = ?', [assetId]);
+  if (!asset) {
+    return res.status(404).json({ success: false, message: 'Unit aset fisik tidak ditemukan.' });
+  }
+  const item = query.get(
+    "SELECT id FROM item_types WHERE id = ? AND is_active = 1 AND tracking_mode = 'unique_unit'",
+    [itemTypeId]
+  );
+  if (!item) {
+    return res.status(400).json({ success: false, message: 'Pilih katalog aktif dengan mode pelacakan Unit Unik.' });
+  }
+  const location = query.get('SELECT id FROM locations WHERE id = ? AND is_active = 1', [locationId]);
+  if (!location) {
+    return res.status(400).json({ success: false, message: 'Lokasi tidak ditemukan atau sudah dinonaktifkan.' });
+  }
+  if (locationId !== asset.location_id && ['dipakai', 'dipesan'].includes(asset.status)) {
+    return res.status(400).json({ success: false, message: 'Lokasi aset tidak dapat diubah saat sedang dipinjam atau dipesan.' });
+  }
+  if (itemTypeId !== asset.item_type_id) {
+    const hasHistory = query.get(
+      `SELECT 1
+       WHERE EXISTS (SELECT 1 FROM transaction_lines WHERE asset_unit_id = ?)
+          OR EXISTS (SELECT 1 FROM kit_components WHERE asset_unit_id = ?)
+          OR EXISTS (SELECT 1 FROM kit_manifest_items WHERE asset_unit_id = ?)
+       LIMIT 1`,
+      [assetId, assetId, assetId]
+    );
+    if (hasHistory) {
+      return res.status(400).json({ success: false, message: 'Jenis barang tidak dapat diubah karena aset sudah tercatat pada transaksi atau paket.' });
+    }
+  }
+
+  try {
+    query.transaction(() => {
+      const locationChanged = locationId !== asset.location_id;
+      const itemTypeChanged = itemTypeId !== asset.item_type_id;
+      query.run(`
+        UPDATE asset_units
+        SET item_type_id = ?, asset_code = ?, qr_code = ?, serial_number = ?, location_id = ?, condition = ?
+        WHERE id = ?`,
+        [itemTypeId, normalizedCode, normalizedCode, normalizedSerial || null, locationId, condition, assetId]
+      );
+
+      if (itemTypeChanged) {
+        query.run('UPDATE stock_movements SET item_type_id = ? WHERE asset_unit_id = ?', [itemTypeId, assetId]);
+      }
+      if (locationChanged) {
+        query.run(`
+          INSERT INTO stock_movements (
+            item_type_id, asset_unit_id, movement_type, quantity, source_location_id, destination_location_id, operator_id, reason
+          ) VALUES (?, ?, 'mutasi', 1, ?, ?, ?, 'Koreksi lokasi aset fisik')`,
+          [itemTypeId, assetId, asset.location_id, locationId, req.user.id]
+        );
+      }
+
+      logAudit(req.user.id, req.user.name, req.user.role, 'UPDATE_ASSET', 'ASSET_UNIT', assetId, {
+        before: {
+          item_type_id: asset.item_type_id,
+          asset_code: asset.asset_code,
+          serial_number: asset.serial_number,
+          location_id: asset.location_id,
+          condition: asset.condition,
+        },
+        after: {
+          item_type_id: itemTypeId,
+          asset_code: normalizedCode,
+          serial_number: normalizedSerial || null,
+          location_id: locationId,
+          condition,
+        },
+      });
+    })();
+
+    res.json({ success: true, message: 'Data aset fisik berhasil diperbarui.' });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ success: false, message: 'Kode aset tersebut sudah digunakan.' });
+    }
+    console.error('[Inventory] Failed to update physical asset:', err);
+    res.status(500).json({ success: false, message: 'Gagal memperbarui data aset fisik.' });
+  }
+});
+
+// POST /api/assets/bulk (Register physical units using catalog-based asset codes)
+router.post('/assets/bulk', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const { item_type_id, quantity, location_id, condition, serial_number } = req.body;
+  const itemTypeId = Number(item_type_id);
+  const unitCount = Number(quantity);
+  const locationId = Number(location_id);
+  const initialCondition = condition || 'baik';
+  const serialNumber = typeof serial_number === 'string' ? serial_number.trim() : '';
+
+  if (!Number.isSafeInteger(itemTypeId) || itemTypeId < 1 ||
+    !Number.isSafeInteger(locationId) || locationId < 1 ||
+    !Number.isSafeInteger(unitCount) || unitCount < 1 || unitCount > 500) {
+    return res.status(400).json({ success: false, message: 'Barang, lokasi, dan jumlah unit (1–500) wajib diisi dengan benar.' });
+  }
+  if (!['baik', 'rusak_ringan', 'rusak_berat', 'perawatan'].includes(initialCondition)) {
+    return res.status(400).json({ success: false, message: 'Kondisi awal aset tidak valid.' });
+  }
+  if (unitCount > 1 && serialNumber) {
+    return res.status(400).json({ success: false, message: 'Nomor seri hanya dapat diisi saat mendaftarkan satu unit.' });
+  }
+
+  const item = query.get(
+    "SELECT id, code FROM item_types WHERE id = ? AND is_active = 1 AND tracking_mode = 'unique_unit'",
+    [itemTypeId]
+  );
+  if (!item) {
+    return res.status(400).json({ success: false, message: 'Pilih katalog aktif dengan mode pelacakan Unit Unik.' });
+  }
+  const location = query.get('SELECT id FROM locations WHERE id = ? AND is_active = 1', [locationId]);
+  if (!location) {
+    return res.status(400).json({ success: false, message: 'Lokasi tidak ditemukan atau sudah dinonaktifkan.' });
+  }
+
+  try {
+    const assetCodes = query.transaction(() => {
+      const existingCodes = query.all(
+        'SELECT asset_code FROM asset_units WHERE item_type_id = ?',
+        [itemTypeId]
+      );
+      const escapedCatalogCode = item.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const codePattern = new RegExp(`^${escapedCatalogCode}-(\\d+)$`, 'i');
+      let sequence = existingCodes.reduce((highest, asset) => {
+        const match = asset.asset_code.match(codePattern);
+        const existingSequence = match ? Number(match[1]) : 0;
+        return Number.isSafeInteger(existingSequence) ? Math.max(highest, existingSequence) : highest;
+      }, 0) + 1;
+      const createdCodes = [];
+
+      while (createdCodes.length < unitCount) {
+        const assetCode = `${item.code}-${String(sequence).padStart(3, '0')}`;
+        sequence += 1;
+        if (query.get('SELECT 1 FROM asset_units WHERE asset_code = ? OR qr_code = ?', [assetCode, assetCode])) continue;
+
+        const result = query.run(`
+          INSERT INTO asset_units (item_type_id, asset_code, serial_number, location_id, condition, status, qr_code)
+          VALUES (?, ?, ?, ?, ?, 'tersedia', ?)`,
+          [itemTypeId, assetCode, unitCount === 1 ? serialNumber || null : null, locationId, initialCondition, assetCode]
+        );
+        query.run(`
+          INSERT INTO stock_movements (item_type_id, asset_unit_id, movement_type, quantity, destination_location_id, operator_id, reason)
+          VALUES (?, ?, 'masuk', 1, ?, ?, 'Pendaftaran unit aset fisik baru')`,
+          [itemTypeId, result.lastInsertRowid, locationId, req.user.id]
+        );
+        createdCodes.push(assetCode);
+      }
+
+      logAudit(req.user.id, req.user.name, req.user.role, 'CREATE_ASSET_BATCH', 'ASSET_UNIT', createdCodes[0], {
+        item_type_id: itemTypeId,
+        quantity: createdCodes.length,
+        asset_codes: createdCodes,
+      });
+      return createdCodes;
+    })();
+
+    res.json({
+      success: true,
+      message: `${assetCodes.length} unit aset fisik berhasil didaftarkan.`,
+      asset_codes: assetCodes,
+    });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ success: false, message: 'Kode aset yang dihasilkan sudah digunakan. Silakan coba lagi.' });
+    }
+    console.error('[Inventory] Failed to register physical asset units:', err);
+    res.status(500).json({ success: false, message: 'Gagal mendaftarkan unit aset fisik.' });
+  }
 });
 
 // POST /api/assets (Add physical unit)

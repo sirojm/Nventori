@@ -113,13 +113,38 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  deleteItem: (id: number) =>
+    request<{ success: boolean; message: string }>(`/inventory/items/${id}`, { method: 'DELETE' }),
+  restoreItem: (id: number) =>
+    request<{ success: boolean; message: string }>(`/inventory/items/${id}/restore`, { method: 'POST' }),
   getAssets: (params: any = {}) => {
     const q = new URLSearchParams(params).toString();
     return request<{ success: boolean; assets: any[] }>(`/inventory/assets?${q}`);
   },
-  createAsset: (data: any) =>
-    request<{ success: boolean; message: string }>('/inventory/assets', {
+  createAsset: (data: {
+    item_type_id: number;
+    quantity: number;
+    location_id: number;
+    condition: string;
+    serial_number?: string;
+  }) =>
+    request<{ success: boolean; message: string; asset_codes: string[] }>('/inventory/assets/bulk', {
       method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  deleteAsset: (id: number) =>
+    request<{ success: boolean; message: string }>(`/inventory/assets/${id}`, { method: 'DELETE' }),
+  restoreAsset: (id: number) =>
+    request<{ success: boolean; message: string }>(`/inventory/assets/${id}/restore`, { method: 'POST' }),
+  updateAsset: (id: number, data: {
+    item_type_id: number;
+    asset_code: string;
+    serial_number: string;
+    location_id: number;
+    condition: string;
+  }) =>
+    request<{ success: boolean; message: string }>(`/inventory/assets/${id}`, {
+      method: 'PUT',
       body: JSON.stringify(data),
     }),
   getStockPools: () => request<{ success: boolean; pools: any[] }>('/inventory/stock-pools'),
@@ -156,6 +181,17 @@ export const api = {
   },
   getTransactionById: (id: number | string) =>
     request<{ success: boolean; transaction: any }>(`/transactions/${id}`),
+  getReceiptProof: (id: number | string, type: 'handover' | 'return') =>
+    request<{
+      success: boolean;
+      proof: {
+        verification_path: string;
+        transaction_code: string;
+        document_type: 'handover' | 'return';
+        issued_by: string;
+        issued_at: string;
+      };
+    }>(`/transactions/${id}/receipt-proof?type=${type}`),
   createTransaction: (data: any) =>
     request<{ success: boolean; message: string; transaction_id: number; transaction_code: string }>('/transactions', {
       method: 'POST',

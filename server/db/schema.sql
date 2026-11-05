@@ -1,6 +1,20 @@
 -- Nventori Database Schema (SQLite / Node 24 DatabaseSync)
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS receipt_verification_tokens (
+  token TEXT PRIMARY KEY,
+  transaction_id INTEGER NOT NULL,
+  document_type TEXT NOT NULL CHECK(document_type IN ('handover', 'return')),
+  event_id INTEGER NOT NULL,
+  issued_by_id INTEGER NOT NULL,
+  issued_by_name TEXT NOT NULL,
+  issued_at DATETIME NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(document_type, event_id),
+  FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE,
+  FOREIGN KEY (issued_by_id) REFERENCES users(id)
+);
+
 CREATE TABLE IF NOT EXISTS organizational_units (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
