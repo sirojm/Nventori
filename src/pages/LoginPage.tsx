@@ -48,7 +48,7 @@ export const LoginPage: React.FC = () => {
           Nventori
         </h2>
         <p className="mt-1 text-xs text-slate-500">
-          Sistem Terpadu Pengelolaan Inventaris & Peralatan Kantor
+          Sistem Terpadu Pengelolaan Inventaris & Peralatan UTIPD
         </p>
       </div>
 
@@ -104,7 +104,7 @@ export const LoginPage: React.FC = () => {
             </button>
           </form>
 
-          {/* Quick Demo Access Buttons for 3 Roles */}
+          {/* Quick Demo Access Buttons for 3 Roles 
           <div className="mt-6 pt-5 border-t border-slate-100">
             <p className="text-[11px] font-semibold text-slate-500 text-center mb-3">
               Akses Cepat Pengujian (Tiga Level Pengguna):
@@ -146,11 +146,11 @@ export const LoginPage: React.FC = () => {
                 <KeyRound className="w-4 h-4 text-amber-600" />
               </button>
             </div>
-          </div>
+          </div>*/}
         </div>
 
         <p className="text-center text-[11px] text-slate-400 mt-6">
-          Nventori v1.5 • Peminjam tidak memerlukan akun (dicatat oleh petugas)
+          Nventori v1.5 • Sistem Terpadu Pengelolaan Inventaris & Peralatan UTIPD
         </p>
       </div>
     </div>
