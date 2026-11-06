@@ -339,3 +339,102 @@ html.dark .border-purple-200 { border-color: rgba(168, 85, 247, 0.35); }
 html.dark .bg-gradient-to-br {
   background-image: linear-gradient(to bottom right, rgba(16, 185, 129, 0.16), #111a2b 55%, #0f1726);
 }
+
+/* ------------------------------------------------------------------ */
+/* Dark mode, round 3: catch-all for translucent tinted backgrounds    */
+/* (matches only the BASE class, never hover:/focus: variants)         */
+/* ------------------------------------------------------------------ */
+html.dark [class^="bg-emerald-50/"], html.dark [class*=" bg-emerald-50/"],
+html.dark [class^="bg-emerald-100/"], html.dark [class*=" bg-emerald-100/"] { background-color: rgba(16, 185, 129, 0.14); }
+html.dark [class^="bg-rose-50/"], html.dark [class*=" bg-rose-50/"],
+html.dark [class^="bg-red-50/"], html.dark [class*=" bg-red-50/"] { background-color: rgba(244, 63, 94, 0.12); }
+html.dark [class^="bg-amber-50/"], html.dark [class*=" bg-amber-50/"] { background-color: rgba(245, 158, 11, 0.12); }
+html.dark [class^="bg-blue-50/"], html.dark [class*=" bg-blue-50/"] { background-color: rgba(59, 130, 246, 0.12); }
+html.dark [class^="bg-purple-50/"], html.dark [class*=" bg-purple-50/"] { background-color: rgba(168, 85, 247, 0.12); }
+html.dark [class^="bg-slate-50/"], html.dark [class*=" bg-slate-50/"] { background-color: rgba(15, 23, 38, 0.7); }
+
+/* Info banner above the kits list ("Paket mengelompokkan alat...") */
+html.dark .kit-banner { background-color: rgba(16, 185, 129, 0.14); border-color: rgba(16, 185, 129, 0.35); }
+html.dark .kit-banner p, html.dark .kit-banner .text-emerald-900 { color: #d1fae5; }
+html.dark .kit-banner .font-bold { color: #ffffff; }
+html.dark .kit-banner button { background-color: #2a8560; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2); }
+html.dark .kit-banner button:hover { background-color: #34a074; }
+
+/* ------------------------------------------------------------------ */
+/* Phones: data tables become stacked cards (no horizontal scrolling)  */
+/* Cell titles come from data-label, set by useResponsiveTables().     */
+/* ------------------------------------------------------------------ */
+@media screen and (max-width: 767px) {
+  .overflow-x-auto:has(> table.rt) { overflow-x: visible; }
+
+  table.rt, table.rt tbody { display: block; width: 100%; }
+  table.rt thead { display: none; }
+  table.rt tbody { padding: 10px; }
+  table.rt tbody > * + * { margin-top: 10px; }
+
+  table.rt tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px 14px;
+    padding: 12px 14px;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 14px;
+    background: #ffffff;
+  }
+  table.rt tbody tr:hover { background: #f8fafc; }
+
+  table.rt td {
+    display: block;
+    min-width: 0;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    text-align: left !important;
+    overflow-wrap: anywhere;
+  }
+  table.rt td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #94a3b8;
+  }
+  /* First cell = card title, spans both columns, no label */
+  table.rt td:first-child { grid-column: 1 / -1; }
+  table.rt td:first-child::before { display: none; }
+  /* Long free-text columns use the full width */
+  table.rt td[data-label="Rincian Perubahan"],
+  table.rt td[data-label="Kegiatan & Batas Kembali"],
+  table.rt td[data-label="Kegiatan"],
+  table.rt td[data-label="Keperluan"],
+  table.rt td[data-label="Email Petugas"] { grid-column: 1 / -1; }
+  /* Action cell: full width row of buttons under a divider */
+  table.rt td[data-action="1"] {
+    grid-column: 1 / -1;
+    padding-top: 10px !important;
+    border-top: 1px solid #f1f5f9 !important;
+  }
+  table.rt td[data-action="1"]::before { display: none; }
+  table.rt td[data-action="1"] > div,
+  table.rt td[data-action="1"] > button { justify-content: flex-end; }
+  /* Rows with a single message cell (empty state) */
+  table.rt td[colspan] { grid-column: 1 / -1; text-align: center !important; }
+  table.rt td[colspan]::before { display: none; }
+  table.rt tbody tr:has(> td[colspan]) { display: block; }
+
+  /* Wide numeric cells that used to be centered */
+  table.rt td.text-center { text-align: left !important; }
+
+  /* Don't let page chrome that sits next to tables overflow either */
+  .rt-safe { min-width: 0; max-width: 100%; }
+}
+
+@media screen and (max-width: 767px) {
+  html.dark table.rt tbody tr { background: #111a2b; border-color: #26324a !important; }
+  html.dark table.rt tbody tr:hover { background: #1c2842; }
+  html.dark table.rt td[data-action="1"] { border-top-color: #1c2638 !important; }
+  html.dark table.rt td::before { color: #6f7d93; }
+}

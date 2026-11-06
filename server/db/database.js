@@ -44,6 +44,12 @@ export function initDatabase() {
     `);
   }
 
+  // Migration: soft-delete flag for kits (older databases were created without it)
+  const kitColumns = db.prepare('PRAGMA table_info(asset_kits)').all();
+  if (!kitColumns.some(column => column.name === 'is_active')) {
+    db.exec('ALTER TABLE asset_kits ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;');
+  }
+
   console.log('[DB] Nventori SQLite Database initialized successfully.');
 }
 

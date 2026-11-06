@@ -93,7 +93,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  getLocations: () => request<{ success: boolean; locations: any[] }>('/inventory/locations'),
+  getLocations: (includeInactive = false) =>
+    request<{ success: boolean; locations: any[] }>(`/inventory/locations${includeInactive ? '?include_inactive=true' : ''}`),
+  updateLocation: (id: number, data: any) =>
+    request<{ success: boolean; message: string }>(`/inventory/locations/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteLocation: (id: number) =>
+    request<{ success: boolean; message: string }>(`/inventory/locations/${id}`, { method: 'DELETE' }),
+  getReconcilePlan: () =>
+    request<{ success: boolean; clean: boolean; assetChanges: any[]; poolChanges: any[] }>('/inventory/reconcile'),
+  applyReconcile: () =>
+    request<{ success: boolean; applied: number; message: string }>('/inventory/reconcile', { method: 'POST' }),
   createLocation: (data: any) =>
     request<{ success: boolean; message: string }>('/inventory/locations', {
       method: 'POST',
@@ -118,8 +130,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
-  deleteItem: (id: number) =>
-    request<{ success: boolean; message: string }>(`/inventory/items/${id}`, { method: 'DELETE' }),
+  deleteItem: (id: number, options: { clear_stock?: boolean } = {}) =>
+    request<{ success: boolean; message: string }>(`/inventory/items/${id}`, {
+      method: 'DELETE',
+      body: JSON.stringify(options),
+    }),
   restoreItem: (id: number) =>
     request<{ success: boolean; message: string }>(`/inventory/items/${id}/restore`, { method: 'POST' }),
   getAssets: (params: any = {}) => {
@@ -158,8 +173,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  deleteStockPool: (id: number) =>
+    request<{ success: boolean; message: string }>(`/inventory/stock-pools/${id}`, { method: 'DELETE' }),
   getKits: () => request<{ success: boolean; kits: any[] }>('/inventory/kits'),
   getKitById: (id: number | string) => request<{ success: boolean; kit: any }>(`/inventory/kits/${id}`),
+  createKit: (data: any) =>
+    request<{ success: boolean; message: string; kit_id: number }>('/inventory/kits', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  deleteKit: (id: number) =>
+    request<{ success: boolean; message: string }>(`/inventory/kits/${id}`, { method: 'DELETE' }),
   updateKit: (id: number, data: any) =>
     request<{ success: boolean; message: string }>(`/inventory/kits/${id}`, {
       method: 'PUT',
@@ -209,6 +233,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  cancelTransaction: (id: number | string, reason = '') =>
+    request<{ success: boolean; message: string }>(`/transactions/${id}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
   handoverTransaction: (id: number | string, data: any) =>
     request<{ success: boolean; message: string }>(`/transactions/${id}/handover`, {
       method: 'POST',
@@ -243,6 +272,10 @@ export const api = {
 
   // Reports & Dashboard
   getDashboardStats: () => request<{ success: boolean; stats: any; overdue_items: any[]; upcoming_activities: any[]; recent_transactions: any[] }>('/reports/dashboard'),
+  getFullReport: (from: string, to: string) =>
+    request<{ success: boolean } & import('../utils/reportDocument').ReportData>(
+      `/reports/full?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+    ),
   getAuditLogs: (limit = 50) => request<{ success: boolean; logs: any[] }>(`/reports/audit?limit=${limit}`),
   getNotifications: () => request<{ success: boolean; notifications: any[] }>('/reports/notifications'),
 };

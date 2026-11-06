@@ -137,6 +137,18 @@ CREATE TABLE IF NOT EXISTS kit_template_lines (
   FOREIGN KEY (item_type_id) REFERENCES item_types(id)
 );
 
+-- Kelengkapan (accessories) of a catalog item, e.g. "Charger kamera". Descriptive only:
+-- these are NOT catalog items or assets. Register them as items if they must be lent separately.
+CREATE TABLE IF NOT EXISTS item_accessories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_type_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 1,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (item_type_id) REFERENCES item_types(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_item_accessories_item ON item_accessories(item_type_id);
+
 CREATE TABLE IF NOT EXISTS asset_kits (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kit_template_id INTEGER NOT NULL,
@@ -147,6 +159,7 @@ CREATE TABLE IF NOT EXISTS asset_kits (
   status TEXT NOT NULL DEFAULT 'siap_lengkap' CHECK(status IN ('siap_lengkap', 'tidak_lengkap', 'dipakai', 'perawatan')),
   notes TEXT,
   qr_code TEXT NOT NULL UNIQUE,
+  is_active INTEGER NOT NULL DEFAULT 1,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (kit_template_id) REFERENCES kit_templates(id),
   FOREIGN KEY (primary_asset_id) REFERENCES asset_units(id),

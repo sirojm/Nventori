@@ -62,6 +62,12 @@ export interface ItemType {
   units_total?: number;
   pool_total?: number;
   pool_available?: number;
+  accessories?: ItemAccessory[];
+}
+
+export interface ItemAccessory {
+  name: string;
+  quantity: number;
 }
 
 export type AssetCondition = 'baik' | 'rusak_ringan' | 'rusak_berat' | 'perawatan';

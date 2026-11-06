@@ -10,6 +10,8 @@ interface QRScannerModalProps {
   onSelectResult: (result: { type: 'transaction' | 'asset' | 'kit'; data: any }) => void;
   mode?: 'resolve' | 'asset-selection';
   onSelectAsset?: (asset: AssetUnit) => 'added' | 'duplicate' | 'unavailable';
+  /** Wording for the target list in asset-selection mode, e.g. "daftar paket". */
+  listName?: string;
 }
 
 export const QRScannerModal: React.FC<QRScannerModalProps> = ({
@@ -18,6 +20,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   onSelectResult,
   mode = 'resolve',
   onSelectAsset,
+  listName = 'daftar transaksi',
 }) => {
   const [manualCode, setManualCode] = useState('');
   const [loading, setLoading] = useState(false);
@@ -150,7 +153,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
           const outcome = onSelectAssetRef.current?.(asset) ?? 'unavailable';
           if (outcome === 'duplicate') {
             setScanResult(null);
-            setErrorMsg(`${asset.asset_code} (${asset.item_name}) sudah ada di daftar transaksi.`);
+            setErrorMsg(`${asset.asset_code} (${asset.item_name}) sudah ada di ${listName}.`);
             if (resumeScanning) await startScanner();
             return;
           }
@@ -341,7 +344,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
             <p className="text-xs text-slate-600">
               {selectedCount
                 ? `${selectedCount} aset hasil scan ditambahkan. ${lastScannedAsset ? `Terakhir: ${lastScannedAsset.asset_code} · ${lastScannedAsset.item_name}.` : ''} Scan aset berikutnya akan ditambahkan otomatis.`
-                : 'Arahkan kamera ke label QR aset yang sudah disiapkan. Setiap scan menambahkan satu unit ke daftar transaksi.'}
+                : `Arahkan kamera ke label QR aset yang sudah disiapkan. Setiap scan menambahkan satu unit ke ${listName}.`}
             </p>
           )}
         </div>

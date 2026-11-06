@@ -90,7 +90,7 @@ router.get('/resolve/:code', authenticate, (req, res) => {
     FROM asset_kits ak
     JOIN kit_templates kt ON ak.kit_template_id = kt.id
     JOIN locations l ON ak.location_id = l.id
-    WHERE ak.qr_code = ? OR ak.kit_code = ?`,
+    WHERE ak.is_active = 1 AND (ak.qr_code = ? OR ak.kit_code = ?)`,
     [code, code]
   );
 

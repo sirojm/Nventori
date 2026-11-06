@@ -40,6 +40,9 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
 
   // Selected Detail Drawer
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<Transaction | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelling, setCancelling] = useState(false);
   const [drawerLoading, setDrawerLoading] = useState(false);
 
   const loadTransactions = async () => {
@@ -75,6 +78,25 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
       error(err.message || 'Gagal memuat detail transaksi.');
     } finally {
       setDrawerLoading(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!cancelTarget) return;
+    setCancelling(true);
+    try {
+      const res = await api.cancelTransaction(cancelTarget.id, cancelReason);
+      if (res.success) {
+        success(res.message);
+        setCancelTarget(null);
+        setCancelReason('');
+        setSelectedTx(null);
+        loadTransactions();
+      }
+    } catch (err: any) {
+      error(err.message || 'Gagal membatalkan transaksi.');
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -138,6 +160,7 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
             <option value="diserahkan">Diserahkan (Aktif)</option>
             <option value="kembali_sebagian">Kembali Sebagian</option>
             <option value="selesai">Selesai</option>
+            <option value="dibatalkan">Dibatalkan</option>
           </select>
 
           <select
@@ -155,7 +178,7 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
       {/* Transaction Table */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-xs text-left">
+          <table className="rt w-full text-xs text-left">
             <thead>
               <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-semibold">
                 <th className="p-3.5">Kode Transaksi</th>
@@ -175,6 +198,7 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
                     diserahkan: 'bg-amber-100 text-amber-800',
                     kembali_sebagian: 'bg-orange-100 text-orange-800',
                     selesai: 'bg-emerald-100 text-emerald-800',
+                    dibatalkan: 'bg-rose-100 text-rose-800',
                   };
 
                   return (
@@ -224,12 +248,23 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
                       <td className="p-3.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1.5">
                           {tx.status === 'dipesan' && (
-                            <button
-                              onClick={() => handleHandover(tx.id)}
-                              className="px-2.5 py-1 rounded-lg bg-forest-800 hover:bg-forest-900 text-white font-semibold text-[11px] transition cursor-pointer"
-                            >
-                              Serah Terima
-                            </button>
+                            <>
+                              <button
+                                onClick={() => handleHandover(tx.id)}
+                                className="px-2.5 py-1 rounded-lg bg-forest-800 hover:bg-forest-900 text-white font-semibold text-[11px] transition cursor-pointer"
+                              >
+                                Serah Terima
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setCancelReason('');
+                                  setCancelTarget(tx as Transaction);
+                                }}
+                                className="px-2.5 py-1 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 font-semibold text-[11px] transition cursor-pointer"
+                              >
+                                Batalkan
+                              </button>
+                            </>
                           )}
 
                           {['diserahkan', 'kembali_sebagian'].includes(tx.status) && (
@@ -406,6 +441,18 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
                 </button>
               </div>
 
+              {selectedTx.status === 'dipesan' && (
+                <button
+                  onClick={() => {
+                    setCancelReason('');
+                    setCancelTarget(selectedTx);
+                  }}
+                  className="px-4 py-2 rounded-xl border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 font-semibold text-xs cursor-pointer"
+                >
+                  Batalkan Transaksi
+                </button>
+              )}
+
               {['diserahkan', 'kembali_sebagian'].includes(selectedTx.status) && (
                 <button
                   onClick={() => {
@@ -418,6 +465,47 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
                   <span>Checklist Pengembalian</span>
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cancel confirmation */}
+      {cancelTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-4">
+            <div>
+              <h3 className="font-bold text-slate-900 text-sm">Batalkan transaksi ini?</h3>
+              <p className="text-xs text-slate-600 mt-1">
+                <span className="font-mono font-semibold">{cancelTarget.transaction_code}</span> akan dibatalkan.
+                Aset dan stok yang dipesan dilepas kembali agar bisa dipakai transaksi lain.
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Alasan (opsional):</label>
+              <input
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                maxLength={300}
+                placeholder="Contoh: kegiatan dibatalkan"
+                className="w-full px-3 py-2 text-xs border rounded-xl focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+            <div className="flex justify-end gap-2 text-xs">
+              <button
+                onClick={() => setCancelTarget(null)}
+                disabled={cancelling}
+                className="px-4 py-2 font-semibold text-slate-600 hover:text-slate-800 cursor-pointer"
+              >
+                Kembali
+              </button>
+              <button
+                onClick={handleCancel}
+                disabled={cancelling}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white font-semibold cursor-pointer"
+              >
+                {cancelling ? 'Membatalkan...' : 'Ya, Batalkan'}
+              </button>
             </div>
           </div>
         </div>

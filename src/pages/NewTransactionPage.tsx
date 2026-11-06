@@ -370,7 +370,7 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
               <div className="text-[11px] text-slate-500 mt-0.5">Dengan referensi surat yang telah diterima di luar aplikasi</div>
             </button>
           </div>
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+          {/*<div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
             <p className="text-[11px] text-slate-500">
               Alat sudah disiapkan? Pindai QR untuk memasukkannya ke daftar, lalu lengkapi detail transaksi. Reservasi aset dilakukan saat transaksi disimpan.
             </p>
@@ -382,7 +382,7 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
               <Camera className="w-4 h-4" />
               Scan alat yang disiapkan
             </button>
-          </div>
+          </div>*/}
         </div>
 
         {/* Step 2: Borrower identity, required only for inter-unit loans */}

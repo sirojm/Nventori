@@ -1,6 +1,7 @@
 import express from 'express';
 import { randomBytes } from 'node:crypto';
 import { query } from '../db/database.js';
+import { primaryPool } from '../utils/inventorySync.js';
 import { authenticate, logAudit } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -351,6 +352,32 @@ router.post('/', authenticate, (req, res) => {
       }
     }
 
+    // Quantity / consumable stock: check availability against ALL lines of the same item, then reserve.
+    const wanted = new Map();
+    for (const line of lines) {
+      if (line.tracking_mode === 'quantity_pool' || line.tracking_mode === 'consumable') {
+        const qty = Number(line.quantity_requested || 1);
+        if (!Number.isInteger(qty) || qty < 1) {
+          const err = new Error('Jumlah barang harus bilangan bulat minimal 1.');
+          err.code = 'INVALID_QUANTITY';
+          throw err;
+        }
+        const key = Number(line.item_type_id);
+        wanted.set(key, (wanted.get(key) || 0) + qty);
+      }
+    }
+    for (const [itemTypeId, qty] of wanted) {
+      const pool = primaryPool(itemTypeId);
+      const item = query.get('SELECT name FROM item_types WHERE id = ?', [itemTypeId]);
+      if (!pool || pool.quantity_available < qty) {
+        const err = new Error(
+          `Stok ${item?.name || 'barang'} tidak mencukupi (tersedia ${pool?.quantity_available || 0}, diminta ${qty}).`
+        );
+        err.code = 'STOCK_UNAVAILABLE';
+        throw err;
+      }
+    }
+
     // 1. Insert transaction
     const txResult = query.run(`
       INSERT INTO transactions (
@@ -368,6 +395,17 @@ router.post('/', authenticate, (req, res) => {
     );
 
     const txId = txResult.lastInsertRowid;
+
+    // Reserve quantity stock: available -> reserved (moves on to checked-out at handover)
+    for (const [itemTypeId, qty] of wanted) {
+      const pool = primaryPool(itemTypeId);
+      query.run(
+        `UPDATE stock_pools
+         SET quantity_available = quantity_available - ?, quantity_reserved = quantity_reserved + ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [qty, qty, pool.id]
+      );
+    }
 
     // 2. Insert request letter if inter-unit
     if (transaction_type === 'inter_unit_loan') {
@@ -416,11 +454,68 @@ router.post('/', authenticate, (req, res) => {
       transaction_code: result.txCode
     });
   } catch (err) {
-    console.error('[Transaction] Error creating transaction:', err);
-    if (err.code === 'ASSET_UNAVAILABLE' || err.code === 'INVALID_ASSET_SELECTION') {
+    if (['ASSET_UNAVAILABLE', 'INVALID_ASSET_SELECTION', 'STOCK_UNAVAILABLE', 'INVALID_QUANTITY'].includes(err.code)) {
       return res.status(409).json({ success: false, message: err.message });
     }
+    console.error('[Transaction] Error creating transaction:', err);
     res.status(500).json({ success: false, message: 'Gagal membuat transaksi: ' + err.message });
+  }
+});
+
+// POST /api/transactions/:id/cancel (release reservations of a transaction not yet handed over)
+router.post('/:id/cancel', authenticate, (req, res) => {
+  const tx = query.get('SELECT * FROM transactions WHERE id = ?', [req.params.id]);
+  if (!tx) {
+    return res.status(404).json({ success: false, message: 'Transaksi tidak ditemukan.' });
+  }
+  if (tx.status !== 'dipesan' && tx.status !== 'draft') {
+    return res.status(400).json({
+      success: false,
+      message: tx.status === 'dibatalkan'
+        ? 'Transaksi ini sudah dibatalkan.'
+        : 'Hanya transaksi yang belum diserahterimakan yang dapat dibatalkan. Untuk barang yang sudah keluar, catat pengembalian.'
+    });
+  }
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 300) : '';
+
+  const lines = query.all('SELECT * FROM transaction_lines WHERE transaction_id = ?', [tx.id]);
+  const cancel = query.transaction(() => {
+    for (const line of lines) {
+      if (line.asset_unit_id) {
+        query.run("UPDATE asset_units SET status = 'tersedia' WHERE id = ? AND status = 'dipesan'", [line.asset_unit_id]);
+      }
+      if (line.tracking_mode === 'quantity_pool' || line.tracking_mode === 'consumable') {
+        const pool = primaryPool(line.item_type_id);
+        if (pool) {
+          const release = Math.min(pool.quantity_reserved, line.quantity_requested);
+          query.run(
+            `UPDATE stock_pools
+             SET quantity_reserved = quantity_reserved - ?, quantity_available = quantity_available + ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?`,
+            [release, release, pool.id]
+          );
+        }
+      }
+    }
+    query.run(
+      `UPDATE transactions
+       SET status = 'dibatalkan', updated_at = CURRENT_TIMESTAMP,
+           notes = CASE WHEN ? != '' THEN COALESCE(notes || char(10), '') || 'Dibatalkan: ' || ? ELSE notes END
+       WHERE id = ?`,
+      [reason, reason, tx.id]
+    );
+    logAudit(req.user.id, req.user.name, req.user.role, 'CANCEL_TRANSACTION', 'TRANSACTION', tx.id, {
+      code: tx.transaction_code,
+      reason: reason || null,
+    });
+  });
+
+  try {
+    cancel();
+    res.json({ success: true, message: `Transaksi ${tx.transaction_code} dibatalkan. Reservasi barang dilepas.` });
+  } catch (err) {
+    console.error('[Transaction] Failed to cancel:', err);
+    res.status(500).json({ success: false, message: 'Gagal membatalkan transaksi.' });
   }
 });
 
@@ -467,16 +562,25 @@ router.post('/:id/handover', authenticate, (req, res) => {
         );
       }
 
-      // Quantity pool
+      // Quantity pool: consume this line's reservation first; older transactions may have none.
       if (line.tracking_mode === 'quantity_pool') {
-        const pool = query.get('SELECT * FROM stock_pools WHERE item_type_id = ? LIMIT 1', [line.item_type_id]);
+        const pool = primaryPool(line.item_type_id);
         if (pool) {
+          const fromReserved = Math.min(pool.quantity_reserved, line.quantity_requested);
+          const fromAvailable = line.quantity_requested - fromReserved;
+          if (pool.quantity_available < fromAvailable) {
+            const err = new Error('Stok barang tidak mencukupi untuk serah terima. Periksa ketersediaan stok.');
+            err.code = 'STOCK_UNAVAILABLE';
+            throw err;
+          }
           query.run(`
             UPDATE stock_pools
-            SET quantity_available = MAX(0, quantity_available - ?),
-                quantity_checked_out = quantity_checked_out + ?
+            SET quantity_reserved = quantity_reserved - ?,
+                quantity_available = quantity_available - ?,
+                quantity_checked_out = quantity_checked_out + ?,
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = ?`,
-            [line.quantity_requested, line.quantity_requested, pool.id]
+            [fromReserved, fromAvailable, line.quantity_requested, pool.id]
           );
           query.run(`
             INSERT INTO stock_movements (item_type_id, movement_type, quantity, reference_transaction_id, operator_id, reason)
@@ -488,14 +592,23 @@ router.post('/:id/handover', authenticate, (req, res) => {
 
       // Consumable
       if (line.tracking_mode === 'consumable') {
-        const pool = query.get('SELECT * FROM stock_pools WHERE item_type_id = ? LIMIT 1', [line.item_type_id]);
+        const pool = primaryPool(line.item_type_id);
         if (pool) {
+          const fromReserved = Math.min(pool.quantity_reserved, line.quantity_requested);
+          const fromAvailable = line.quantity_requested - fromReserved;
+          if (pool.quantity_available < fromAvailable) {
+            const err = new Error('Stok barang habis pakai tidak mencukupi untuk serah terima.');
+            err.code = 'STOCK_UNAVAILABLE';
+            throw err;
+          }
           query.run(`
             UPDATE stock_pools
-            SET quantity_total = MAX(0, quantity_total - ?),
-                quantity_available = MAX(0, quantity_available - ?)
+            SET quantity_total = quantity_total - ?,
+                quantity_reserved = quantity_reserved - ?,
+                quantity_available = quantity_available - ?,
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = ?`,
-            [line.quantity_requested, line.quantity_requested, pool.id]
+            [line.quantity_requested, fromReserved, fromAvailable, pool.id]
           );
           query.run(`
             INSERT INTO stock_movements (item_type_id, movement_type, quantity, reference_transaction_id, operator_id, reason)
@@ -549,6 +662,9 @@ router.post('/:id/handover', authenticate, (req, res) => {
     processHandover();
     res.json({ success: true, message: 'Barang berhasil diserahterimakan dan manifest tercatat.' });
   } catch (err) {
+    if (err.code === 'STOCK_UNAVAILABLE') {
+      return res.status(409).json({ success: false, message: err.message });
+    }
     console.error('[Handover] Error:', err);
     res.status(500).json({ success: false, message: 'Gagal memproses serah terima: ' + err.message });
   }
@@ -592,7 +708,10 @@ router.post('/:id/returns', authenticate, (req, res) => {
       if (item.type === 'line') {
         const line = query.get('SELECT * FROM transaction_lines WHERE id = ?', [item.id]);
         if (line) {
-          const qty = Number(item.quantity_returned) || 1;
+          // Never accept more than what is still outstanding (prevents stock from inflating)
+          const outstanding = Math.max(0, line.quantity_handed_over - line.quantity_returned);
+          const qty = Math.min(Number(item.quantity_returned) || 1, outstanding);
+          if (qty <= 0) continue;
           const newReturnedQty = line.quantity_returned + qty;
 
           query.run('UPDATE transaction_lines SET quantity_returned = ? WHERE id = ?', [newReturnedQty, line.id]);
@@ -619,12 +738,13 @@ router.post('/:id/returns', authenticate, (req, res) => {
 
           // Update stock pool
           if (line.tracking_mode === 'quantity_pool') {
-            const pool = query.get('SELECT * FROM stock_pools WHERE item_type_id = ? LIMIT 1', [line.item_type_id]);
+            const pool = primaryPool(line.item_type_id);
             if (pool) {
               query.run(`
                 UPDATE stock_pools
                 SET quantity_available = quantity_available + ?,
-                    quantity_checked_out = MAX(0, quantity_checked_out - ?)
+                    quantity_checked_out = MAX(0, quantity_checked_out - ?),
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?`,
                 [qty, qty, pool.id]
               );

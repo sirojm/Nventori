@@ -18,6 +18,7 @@ import { UsersPage } from './pages/UsersPage';
 import { MobileMorePage } from './pages/MobileMorePage';
 
 import { QRScannerModal } from './components/scanner/QRScannerModal';
+import { useResponsiveTables } from './hooks/useResponsiveTables';
 import { ReturnModal } from './pages/ReturnModal';
 import { LabelPrintModal } from './components/print/LabelPrintModal';
 import { ReceiptPrintModal } from './components/print/ReceiptPrintModal';
@@ -27,6 +28,7 @@ import { AssetUnit, Transaction } from './types';
 
 const AppContent: React.FC = () => {
   const { user, loading, isAuthenticated, logout } = useAuth();
+  useResponsiveTables();
 
   // Navigation State
   const [currentPage, setCurrentPage] = useState<DesktopNavPage | 'new_transaction' | 'more'>('dashboard');

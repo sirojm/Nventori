@@ -1,8 +1,52 @@
 import express from 'express';
 import { query } from '../db/database.js';
 import { authenticate, authorize, logAudit } from '../middleware/auth.js';
+import {
+  primaryPool, liveUsageForItem, liveTransactionsForAsset, buildReconcilePlan, applyReconcilePlan,
+} from '../utils/inventorySync.js';
 
 const router = express.Router();
+
+// ---- Accessories (kelengkapan) helpers -------------------------------------------------
+// Accepts [{ name, quantity }]. Returns { list } or { error }.
+function sanitizeAccessories(input) {
+  if (input === undefined || input === null) return { list: [] };
+  if (!Array.isArray(input)) return { error: 'Format kelengkapan tidak valid.' };
+  if (input.length > 30) return { error: 'Maksimal 30 kelengkapan per barang.' };
+  const seen = new Set();
+  const list = [];
+  for (const entry of input) {
+    const name = typeof entry?.name === 'string' ? entry.name.trim().replace(/\s+/g, ' ') : '';
+    const quantity = entry?.quantity === undefined || entry?.quantity === '' ? 1 : Number(entry.quantity);
+    if (!name) continue;
+    if (name.length > 80) return { error: `Nama kelengkapan "${name.slice(0, 20)}..." terlalu panjang (maks. 80 karakter).` };
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) {
+      return { error: `Jumlah kelengkapan "${name}" harus bilangan bulat 1-99.` };
+    }
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push({ name, quantity });
+  }
+  return { list };
+}
+
+function saveAccessories(itemId, list) {
+  query.run('DELETE FROM item_accessories WHERE item_type_id = ?', [itemId]);
+  for (const accessory of list) {
+    query.run('INSERT INTO item_accessories (item_type_id, name, quantity) VALUES (?, ?, ?)', [itemId, accessory.name, accessory.quantity]);
+  }
+}
+
+// Import CSV cell: "Charger kamera:1|Baterai:2|Lensa kit"
+function parseAccessoryCell(cell) {
+  if (typeof cell !== 'string' || !cell.trim()) return [];
+  return cell.split('|').map((part) => {
+    const trimmed = part.trim();
+    const match = trimmed.match(/^(.*?)\s*[:x×]\s*(\d+)$/i);
+    return match && match[1] ? { name: match[1], quantity: Number(match[2]) } : { name: trimmed, quantity: 1 };
+  });
+}
 
 // GET /api/categories
 router.get('/categories', authenticate, (req, res) => {
@@ -82,11 +126,16 @@ router.delete('/categories/:id', authenticate, authorize(['admin_inventaris']), 
 
 // GET /api/locations
 router.get('/locations', authenticate, (req, res) => {
+  const includeInactive = req.query.include_inactive === 'true';
   const locations = query.all(`
-    SELECT l.*, 
-           (SELECT COUNT(*) FROM asset_units WHERE location_id = l.id) as asset_count
+    SELECT l.*,
+           (SELECT COUNT(*) FROM asset_units WHERE location_id = l.id AND status != 'nonaktif') as asset_count,
+           (SELECT COUNT(*) FROM stock_pools sp JOIN item_types it ON it.id = sp.item_type_id
+              WHERE sp.location_id = l.id AND it.is_active = 1 AND sp.quantity_total > 0) as pool_count,
+           (SELECT COUNT(*) FROM asset_kits WHERE location_id = l.id AND is_active = 1) as kit_count
     FROM locations l
-    ORDER BY l.name ASC`
+    ${includeInactive ? '' : 'WHERE l.is_active = 1'}
+    ORDER BY l.is_active DESC, l.name ASC`
   );
   res.json({ success: true, locations });
 });
@@ -94,19 +143,94 @@ router.get('/locations', authenticate, (req, res) => {
 // POST /api/locations
 router.post('/locations', authenticate, authorize(['admin_inventaris']), (req, res) => {
   const { name, code, description } = req.body;
-  if (!name || !code) {
+  if (!name?.trim() || !code?.trim()) {
     return res.status(400).json({ success: false, message: 'Nama dan kode lokasi wajib diisi.' });
   }
 
   try {
     const result = query.run(
       'INSERT INTO locations (name, code, description) VALUES (?, ?, ?)',
-      [name, code.toUpperCase(), description || null]
+      [name.trim(), code.trim().toUpperCase(), description?.trim() || null]
     );
     logAudit(req.user.id, req.user.name, req.user.role, 'CREATE', 'LOCATION', result.lastInsertRowid, { name, code });
-    res.json({ success: true, message: 'Lokasi penyimpanan berhasil ditambahkan.' });
+    res.json({ success: true, message: 'Gudang penyimpanan berhasil ditambahkan.', location_id: result.lastInsertRowid });
   } catch (err) {
-    res.status(400).json({ success: false, message: 'Kode atau nama lokasi sudah ada.' });
+    res.status(400).json({ success: false, message: 'Kode atau nama gudang sudah ada.' });
+  }
+});
+
+// PUT /api/locations/:id
+router.put('/locations/:id', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const { name, code, description } = req.body;
+  if (!name?.trim() || !code?.trim()) {
+    return res.status(400).json({ success: false, message: 'Nama dan kode gudang wajib diisi.' });
+  }
+  const location = query.get('SELECT * FROM locations WHERE id = ? AND is_active = 1', [req.params.id]);
+  if (!location) {
+    return res.status(404).json({ success: false, message: 'Gudang tidak ditemukan.' });
+  }
+  try {
+    query.run(
+      'UPDATE locations SET name = ?, code = ?, description = ? WHERE id = ?',
+      [name.trim(), code.trim().toUpperCase(), description?.trim() || null, location.id]
+    );
+    logAudit(req.user.id, req.user.name, req.user.role, 'UPDATE', 'LOCATION', location.id, { name, code });
+    res.json({ success: true, message: 'Gudang berhasil diperbarui.' });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(400).json({ success: false, message: 'Kode atau nama gudang sudah digunakan.' });
+    }
+    console.error('[Inventory] Failed to update location:', err);
+    res.status(500).json({ success: false, message: 'Gagal memperbarui gudang.' });
+  }
+});
+
+// DELETE /api/locations/:id (soft delete; blocked while it still holds anything)
+router.delete('/locations/:id', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const location = query.get('SELECT * FROM locations WHERE id = ? AND is_active = 1', [req.params.id]);
+  if (!location) {
+    return res.status(404).json({ success: false, message: 'Gudang tidak ditemukan.' });
+  }
+
+  const assets = query.get("SELECT COUNT(*) AS n FROM asset_units WHERE location_id = ? AND status != 'nonaktif'", [location.id]).n;
+  const pools = query.get(
+    `SELECT COUNT(*) AS n FROM stock_pools sp JOIN item_types it ON it.id = sp.item_type_id
+     WHERE sp.location_id = ? AND it.is_active = 1 AND sp.quantity_total > 0`, [location.id]).n;
+  const kits = query.get('SELECT COUNT(*) AS n FROM asset_kits WHERE location_id = ? AND is_active = 1', [location.id]).n;
+  if (assets || pools || kits) {
+    const parts = [];
+    if (assets) parts.push(`${assets} unit aset`);
+    if (pools) parts.push(`${pools} catatan stok`);
+    if (kits) parts.push(`${kits} paket`);
+    return res.status(409).json({
+      success: false,
+      message: `Gudang masih menyimpan ${parts.join(', ')}. Pindahkan atau hapus isinya terlebih dahulu.`,
+    });
+  }
+  const remaining = query.get('SELECT COUNT(*) AS n FROM locations WHERE is_active = 1 AND id != ?', [location.id]).n;
+  if (remaining === 0) {
+    return res.status(409).json({ success: false, message: 'Minimal harus ada satu gudang aktif.' });
+  }
+
+  const remove = query.transaction(() => {
+    // Empty/archived leftovers of this location are dropped; names are freed for reuse.
+    query.run(
+      `DELETE FROM stock_pools WHERE location_id = ? AND quantity_total = 0 AND quantity_reserved = 0 AND quantity_checked_out = 0`,
+      [location.id]
+    );
+    query.run(
+      'UPDATE locations SET is_active = 0, name = ?, code = ? WHERE id = ?',
+      [`${location.name} [dihapus-${location.id}]`, `${location.code}~DEL${location.id}`, location.id]
+    );
+  });
+  try {
+    remove();
+    logAudit(req.user.id, req.user.name, req.user.role, 'DELETE', 'LOCATION', location.id, { name: location.name, code: location.code });
+    res.json({ success: true, message: `Gudang "${location.name}" dihapus.` });
+  } catch (err) {
+    // Remaining pools (e.g. of archived items) still reference it: keep the row, just hide it.
+    console.error('[Inventory] Failed to delete location:', err);
+    res.status(500).json({ success: false, message: 'Gagal menghapus gudang.' });
   }
 });
 
@@ -142,7 +266,16 @@ router.get('/items', authenticate, (req, res) => {
 
   sql += ' ORDER BY it.name ASC';
   const items = query.all(sql, params);
-  res.json({ success: true, items });
+  const accessoryRows = query.all('SELECT item_type_id, name, quantity FROM item_accessories ORDER BY id ASC');
+  const accessoriesByItem = new Map();
+  for (const row of accessoryRows) {
+    if (!accessoriesByItem.has(row.item_type_id)) accessoriesByItem.set(row.item_type_id, []);
+    accessoriesByItem.get(row.item_type_id).push({ name: row.name, quantity: row.quantity });
+  }
+  res.json({
+    success: true,
+    items: items.map((item) => ({ ...item, accessories: accessoriesByItem.get(item.id) || [] })),
+  });
 });
 
 // POST /api/items
@@ -259,8 +392,15 @@ router.post('/items/import', authenticate, authorize(['admin_inventaris']), (req
       return;
     }
 
+    const accessoryCheck = sanitizeAccessories(parseAccessoryCell(row.accessories));
+    if (accessoryCheck.error) {
+      errors.push(`Baris ${rowNumber}: ${accessoryCheck.error}`);
+      return;
+    }
+
     normalizedRows.push({
       rowNumber,
+      accessories: accessoryCheck.list,
       name,
       code,
       categoryId: category.id,
@@ -292,6 +432,7 @@ router.post('/items/import', authenticate, authorize(['admin_inventaris']), (req
         [row.name, row.code, row.categoryId, row.brandModel || null, row.unitOfMeasure, row.specs || null, row.trackingMode]
       );
       const itemId = result.lastInsertRowid;
+      if (row.accessories.length) saveAccessories(itemId, row.accessories);
 
       if (row.trackingMode !== 'unique_unit') {
         query.run(`
@@ -331,9 +472,13 @@ router.post('/items/import', authenticate, authorize(['admin_inventaris']), (req
 });
 
 router.post('/items', authenticate, authorize(['admin_inventaris']), (req, res) => {
-  const { name, code, category_id, brand_model, unit_of_measure, specs, tracking_mode } = req.body;
+  const { name, code, category_id, brand_model, unit_of_measure, specs, tracking_mode, accessories } = req.body;
   if (!name || !code || !category_id || !tracking_mode) {
     return res.status(400).json({ success: false, message: 'Nama, kode, kategori, dan mode pelacakan wajib diisi.' });
+  }
+  const accessoryCheck = sanitizeAccessories(accessories);
+  if (accessoryCheck.error) {
+    return res.status(400).json({ success: false, message: accessoryCheck.error });
   }
 
   try {
@@ -342,6 +487,7 @@ router.post('/items', authenticate, authorize(['admin_inventaris']), (req, res) 
       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [name, code.toUpperCase(), category_id, brand_model || null, unit_of_measure || 'Unit', specs || null, tracking_mode]
     );
+    if (accessoryCheck.list.length) saveAccessories(result.lastInsertRowid, accessoryCheck.list);
 
     // If quantity_pool or consumable, initialize default stock pool at first location
     if (tracking_mode !== 'unique_unit') {
@@ -364,9 +510,13 @@ router.post('/items', authenticate, authorize(['admin_inventaris']), (req, res) 
 
 // PUT /api/items/:id
 router.put('/items/:id', authenticate, authorize(['admin_inventaris']), (req, res) => {
-  const { name, code, category_id, brand_model, unit_of_measure, specs, tracking_mode } = req.body;
+  const { name, code, category_id, brand_model, unit_of_measure, specs, tracking_mode, accessories } = req.body;
   if (!name?.trim() || !code?.trim() || !category_id || !['unique_unit', 'quantity_pool', 'consumable'].includes(tracking_mode)) {
     return res.status(400).json({ success: false, message: 'Nama, kode, kategori, dan mode pelacakan wajib diisi.' });
+  }
+  const accessoryCheck = sanitizeAccessories(accessories);
+  if (accessoryCheck.error) {
+    return res.status(400).json({ success: false, message: accessoryCheck.error });
   }
 
   const item = query.get('SELECT * FROM item_types WHERE id = ? AND is_active = 1', [req.params.id]);
@@ -406,6 +556,8 @@ router.put('/items/:id', authenticate, authorize(['admin_inventaris']), (req, re
         item.id,
       ]
     );
+    // Only touch accessories when the client sent them (older clients leave them untouched)
+    if (Array.isArray(accessories)) saveAccessories(item.id, accessoryCheck.list);
 
     logAudit(req.user.id, req.user.name, req.user.role, 'UPDATE', 'ITEM_TYPE', item.id, { name, code, category_id, tracking_mode });
     res.json({ success: true, message: 'Katalog barang berhasil diperbarui.' });
@@ -441,19 +593,38 @@ router.delete('/items/:id', authenticate, authorize(['admin_inventaris']), (req,
     });
   }
 
-  const stock = query.get(
-    `SELECT 1 FROM stock_pools
-     WHERE item_type_id = ? AND (
-       quantity_total > 0 OR quantity_available > 0 OR quantity_reserved > 0 OR quantity_checked_out > 0
-     ) LIMIT 1`,
-    [itemId]
-  );
-  if (stock) {
+  // Use what the transactions really say, not the stored counters (which can drift).
+  const live = liveUsageForItem(itemId);
+  if (live.outstanding > 0 || live.reserved > 0) {
     return res.status(409).json({
       success: false,
-      message: 'Katalog masih memiliki stok kuantitas. Sesuaikan seluruh stok menjadi nol terlebih dahulu.',
+      message: `Barang masih dipakai di transaksi aktif: ${live.transactions.join(', ')}. Selesaikan atau batalkan transaksi tersebut terlebih dahulu.`,
     });
   }
+
+  // Remaining stock is removed together with the catalog entry once the caller has confirmed it.
+  const pools = query.all('SELECT * FROM stock_pools WHERE item_type_id = ?', [itemId]);
+  const stockTotal = pools.reduce((sum, pool) => sum + pool.quantity_total, 0);
+  if (stockTotal > 0 && req.body?.clear_stock !== true) {
+    return res.status(409).json({
+      success: false,
+      code: 'HAS_STOCK',
+      message: `Katalog masih memiliki stok ${stockTotal}. Konfirmasi penghapusan stok untuk melanjutkan.`,
+    });
+  }
+  const clearStock = query.transaction(() => {
+    for (const pool of pools) {
+      if (pool.quantity_total > 0) {
+        query.run(
+          `INSERT INTO stock_movements (item_type_id, movement_type, quantity, source_location_id, operator_id, reason)
+           VALUES (?, 'penyesuaian', ?, ?, ?, ?)`,
+          [itemId, -pool.quantity_total, pool.location_id, req.user.id, 'Stok dihapus bersama katalog barang']
+        );
+      }
+    }
+    query.run('DELETE FROM stock_pools WHERE item_type_id = ?', [itemId]);
+  });
+  clearStock();
 
   query.run('UPDATE item_types SET is_active = 0 WHERE id = ?', [itemId]);
   logAudit(req.user.id, req.user.name, req.user.role, 'DEACTIVATE', 'ITEM_TYPE', itemId, {
@@ -534,7 +705,14 @@ router.delete('/assets/:id', authenticate, authorize(['admin_inventaris']), (req
     return res.status(404).json({ success: false, message: 'Unit aset aktif tidak ditemukan.' });
   }
   if (asset.status !== 'tersedia') {
-    return res.status(409).json({ success: false, message: 'Aset yang sedang dipinjam atau dipesan tidak dapat dihapus.' });
+    // Only block when a transaction really still holds the unit (a stuck status must not trap it).
+    const live = liveTransactionsForAsset(assetId);
+    if (live.length) {
+      return res.status(409).json({
+        success: false,
+        message: `Aset masih dipakai di transaksi aktif: ${live.map((t) => `${t.transaction_code} (${t.status})`).join(', ')}. Selesaikan atau batalkan transaksinya terlebih dahulu.`,
+      });
+    }
   }
   const kitReference = query.get('SELECT 1 FROM kit_components WHERE asset_unit_id = ? LIMIT 1', [assetId]);
   if (kitReference) {
@@ -799,6 +977,7 @@ router.get('/stock-pools', authenticate, (req, res) => {
     FROM stock_pools sp
     JOIN item_types it ON sp.item_type_id = it.id
     JOIN locations l ON sp.location_id = l.id
+    WHERE it.is_active = 1
     ORDER BY it.name ASC`
   );
   res.json({ success: true, pools });
@@ -850,6 +1029,166 @@ router.post('/stock-pools/adjust', authenticate, authorize(['admin_inventaris'])
   res.json({ success: true, message: 'Penyesuaian stok berhasil disimpan.' });
 });
 
+// GET /api/reconcile  (dry run) and POST /api/reconcile (apply)
+router.get('/reconcile', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const plan = buildReconcilePlan();
+  res.json({ success: true, ...plan, clean: plan.assetChanges.length === 0 && plan.poolChanges.length === 0 });
+});
+
+router.post('/reconcile', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const plan = buildReconcilePlan();
+  if (!plan.assetChanges.length && !plan.poolChanges.length) {
+    return res.json({ success: true, applied: 0, message: 'Data inventaris sudah sinkron dengan transaksi.' });
+  }
+  try {
+    applyReconcilePlan(plan);
+    logAudit(req.user.id, req.user.name, req.user.role, 'RECONCILE', 'INVENTORY', 0, {
+      assets: plan.assetChanges.length,
+      pools: plan.poolChanges.length,
+      assetChanges: plan.assetChanges.slice(0, 50),
+      poolChanges: plan.poolChanges.slice(0, 50),
+    });
+    const applied = plan.assetChanges.length + plan.poolChanges.length;
+    res.json({ success: true, applied, message: `${applied} data inventaris disinkronkan dengan transaksi.` });
+  } catch (err) {
+    console.error('[Inventory] Reconcile failed:', err);
+    res.status(500).json({ success: false, message: 'Gagal menyinkronkan data inventaris.' });
+  }
+});
+
+// DELETE /api/stock-pools/:id
+router.delete('/stock-pools/:id', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const pool = query.get(`
+    SELECT sp.*, it.name AS item_name, l.name AS location_name
+    FROM stock_pools sp
+    JOIN item_types it ON it.id = sp.item_type_id
+    JOIN locations l ON l.id = sp.location_id
+    WHERE sp.id = ?`, [req.params.id]);
+  if (!pool) {
+    return res.status(404).json({ success: false, message: 'Catatan stok tidak ditemukan.' });
+  }
+  const itemRow = query.get('SELECT is_active FROM item_types WHERE id = ?', [pool.item_type_id]);
+  const itemActive = !!itemRow?.is_active;
+  if (itemActive) {
+    const primary = primaryPool(pool.item_type_id);
+    if (primary && primary.id === pool.id) {
+      const live = liveUsageForItem(pool.item_type_id);
+      if (live.outstanding > 0 || live.reserved > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Stok ${pool.item_name} masih dipakai di transaksi aktif: ${live.transactions.join(', ')}. Selesaikan atau batalkan transaksi tersebut terlebih dahulu.`
+        });
+      }
+    }
+    const siblings = query.get('SELECT COUNT(*) AS n FROM stock_pools WHERE item_type_id = ? AND id != ?', [pool.item_type_id, pool.id]);
+    if (!siblings || siblings.n === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ini satu-satunya catatan stok untuk barang ini. Gunakan Edit Stok untuk mengosongkannya, atau hapus barangnya dari katalog.'
+      });
+    }
+  }
+
+  const remove = query.transaction(() => {
+    if (pool.quantity_total > 0) {
+      query.run(`
+        INSERT INTO stock_movements (item_type_id, movement_type, quantity, source_location_id, operator_id, reason)
+        VALUES (?, 'penyesuaian', ?, ?, ?, ?)`,
+        [pool.item_type_id, -pool.quantity_total, pool.location_id, req.user.id, 'Catatan stok dihapus oleh petugas']
+      );
+    }
+    query.run('DELETE FROM stock_pools WHERE id = ?', [pool.id]);
+  });
+
+  try {
+    remove();
+    logAudit(req.user.id, req.user.name, req.user.role, 'DELETE', 'STOCK_POOL', pool.id, {
+      item: pool.item_name, location: pool.location_name, condition: pool.condition, quantity_total: pool.quantity_total
+    });
+    res.json({ success: true, message: `Catatan stok ${pool.item_name} (${pool.location_name}) dihapus.` });
+  } catch (err) {
+    console.error('[Inventory] Failed to delete stock pool:', err);
+    res.status(500).json({ success: false, message: 'Gagal menghapus catatan stok.' });
+  }
+});
+
+// ---- Kits (paket kegiatan) helpers -------------------------------------------------------
+// Validates + normalizes kit components. Each component must reference a registered catalog item
+// (directly or through a specific asset unit). `legacyNames` = names of old unlinked components that
+// may be kept as-is while editing an existing kit.
+function normalizeKitComponents(components, legacyNames = new Set()) {
+  if (!Array.isArray(components)) return { error: 'Daftar komponen tidak valid.' };
+  const list = [];
+  const usedAssets = new Set();
+  for (const component of components) {
+    const quantity = Number(component?.quantity);
+    const condition = component?.condition || 'baik';
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 999 || !['baik', 'rusak'].includes(condition)) {
+      return { error: 'Setiap komponen harus memiliki jumlah minimal 1 dan kondisi yang valid.' };
+    }
+
+    let itemTypeId = component.item_type_id ? Number(component.item_type_id) : null;
+    const assetUnitId = component.asset_unit_id ? Number(component.asset_unit_id) : null;
+    let name = typeof component.component_name === 'string' ? component.component_name.trim() : '';
+
+    if (assetUnitId) {
+      const asset = query.get(
+        `SELECT au.item_type_id, au.asset_code, it.name AS item_name
+         FROM asset_units au JOIN item_types it ON it.id = au.item_type_id WHERE au.id = ?`,
+        [assetUnitId]
+      );
+      if (!asset) return { error: 'Salah satu unit aset komponen tidak ditemukan.' };
+      if (itemTypeId && itemTypeId !== asset.item_type_id) {
+        return { error: 'Katalog komponen tidak sesuai dengan jenis unit aset yang dipilih.' };
+      }
+      if (usedAssets.has(assetUnitId)) {
+        return { error: `Unit aset ${asset.asset_code} dipilih lebih dari sekali dalam paket yang sama.` };
+      }
+      usedAssets.add(assetUnitId);
+      if (quantity !== 1) return { error: `Komponen unit aset ${asset.asset_code} harus berjumlah 1.` };
+      itemTypeId = asset.item_type_id;
+      name = name || asset.item_name;
+    }
+
+    if (itemTypeId) {
+      const item = query.get('SELECT name FROM item_types WHERE id = ? AND is_active = 1', [itemTypeId]);
+      if (!item) return { error: 'Salah satu barang katalog pada komponen tidak ditemukan atau sudah nonaktif.' };
+      name = name || item.name;
+    } else if (!name || !legacyNames.has(name.toLowerCase())) {
+      return { error: 'Setiap komponen harus dipilih dari katalog atau aset yang sudah terdaftar.' };
+    }
+
+    list.push({
+      item_type_id: itemTypeId,
+      asset_unit_id: assetUnitId,
+      component_name: name,
+      quantity,
+      condition,
+      is_required: component.is_required === 0 ? 0 : 1,
+    });
+  }
+  return { list };
+}
+
+function insertKitComponents(kitId, list) {
+  for (const component of list) {
+    query.run(`
+      INSERT INTO kit_components (asset_kit_id, item_type_id, component_name, asset_unit_id, quantity, condition, is_required)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [kitId, component.item_type_id, component.component_name, component.asset_unit_id, component.quantity, component.condition, component.is_required]
+    );
+  }
+}
+
+function generateKitCode(name) {
+  const slug = String(name || 'PAKET').toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 14).replace(/-+$/g, '') || 'PAKET';
+  for (let n = 1; n < 1000; n += 1) {
+    const code = `KIT-${slug}-${String(n).padStart(2, '0')}`;
+    if (!query.get('SELECT 1 FROM asset_kits WHERE kit_code = ? OR qr_code = ?', [code, code])) return code;
+  }
+  return `KIT-${slug}-${Date.now()}`;
+}
+
 // GET /api/kits (Asset kits / packages)
 router.get('/kits', authenticate, (req, res) => {
   const kits = query.all(`
@@ -859,6 +1198,7 @@ router.get('/kits', authenticate, (req, res) => {
     FROM asset_kits ak
     JOIN kit_templates kt ON ak.kit_template_id = kt.id
     JOIN locations l ON ak.location_id = l.id
+    WHERE ak.is_active = 1
     ORDER BY ak.name ASC`
   );
 
@@ -904,6 +1244,118 @@ router.get('/kits/:id', authenticate, (req, res) => {
   res.json({ success: true, kit: { ...kit, components } });
 });
 
+// POST /api/kits  (create a new activity package from registered catalog/assets)
+router.post('/kits', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const { name, kit_code, location_id, notes, components } = req.body;
+  if (!name?.trim() || !location_id || !Array.isArray(components)) {
+    return res.status(400).json({ success: false, message: 'Nama paket, lokasi, dan daftar komponen wajib diisi.' });
+  }
+  if (components.length === 0) {
+    return res.status(400).json({ success: false, message: 'Tambahkan minimal satu komponen ke paket.' });
+  }
+  const location = query.get('SELECT id FROM locations WHERE id = ?', [location_id]);
+  if (!location) {
+    return res.status(400).json({ success: false, message: 'Lokasi tidak ditemukan.' });
+  }
+  const checked = normalizeKitComponents(components);
+  if (checked.error) {
+    return res.status(400).json({ success: false, message: checked.error });
+  }
+
+  if (query.get('SELECT 1 FROM asset_kits WHERE is_active = 1 AND name = ? COLLATE NOCASE', [name.trim()])) {
+    return res.status(400).json({ success: false, message: `Sudah ada paket bernama "${name.trim()}". Gunakan nama lain.` });
+  }
+
+  const code = kit_code?.trim() ? kit_code.trim().toUpperCase() : generateKitCode(name);
+  if (query.get('SELECT 1 FROM asset_kits WHERE kit_code = ? OR qr_code = ?', [code, code])) {
+    return res.status(400).json({ success: false, message: 'Kode paket sudah digunakan.' });
+  }
+
+  // Unique tag so a re-created package never collides with the template of an archived one
+  const templateTag = Date.now().toString(36).toUpperCase();
+
+  const create = query.transaction(() => {
+    // Every kit needs a template row (schema requirement); one is created per package.
+    const template = query.run(
+      'INSERT INTO kit_templates (name, code, description) VALUES (?, ?, ?)',
+      [`${name.trim()} [${templateTag}]`, `TPL-${code}-${templateTag}`, notes?.trim() || null]
+    );
+    const kit = query.run(`
+      INSERT INTO asset_kits (kit_template_id, name, kit_code, location_id, status, notes, qr_code)
+      VALUES (?, ?, ?, ?, 'siap_lengkap', ?, ?)`,
+      [template.lastInsertRowid, name.trim(), code, location_id, notes?.trim() || null, code]
+    );
+    insertKitComponents(kit.lastInsertRowid, checked.list);
+    return kit.lastInsertRowid;
+  });
+
+  try {
+    const kitId = create();
+    logAudit(req.user.id, req.user.name, req.user.role, 'CREATE', 'ASSET_KIT', kitId, { name, kit_code: code, component_count: checked.list.length });
+    res.json({ success: true, kit_id: kitId, message: `Paket "${name.trim()}" berhasil dibuat.` });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(400).json({ success: false, message: 'Nama atau kode paket sudah digunakan.' });
+    }
+    console.error('[Inventory] Failed to create kit:', err);
+    res.status(500).json({ success: false, message: 'Gagal membuat paket.' });
+  }
+});
+
+// DELETE /api/kits/:id
+// Packages never owned assets, so deleting one only removes the grouping. If the package appears in
+// past transactions it is archived (is_active = 0) so that history keeps working.
+router.delete('/kits/:id', authenticate, authorize(['admin_inventaris']), (req, res) => {
+  const kit = query.get('SELECT * FROM asset_kits WHERE id = ? AND is_active = 1', [req.params.id]);
+  if (!kit) {
+    return res.status(404).json({ success: false, message: 'Paket tidak ditemukan.' });
+  }
+  if (kit.status === 'dipakai') {
+    return res.status(400).json({ success: false, message: 'Paket sedang dipakai dan tidak dapat dihapus.' });
+  }
+  const active = query.get(`
+    SELECT 1 FROM transaction_lines tl
+    JOIN transactions t ON t.id = tl.transaction_id
+    WHERE tl.asset_kit_id = ? AND t.status IN ('draft', 'dipesan', 'diserahkan', 'kembali_sebagian')
+    LIMIT 1`, [kit.id]);
+  if (active) {
+    return res.status(400).json({ success: false, message: 'Paket masih terhubung dengan transaksi aktif dan belum dapat dihapus.' });
+  }
+
+  const hasHistory = query.get(
+    `SELECT 1 FROM transaction_lines WHERE asset_kit_id = ?
+     UNION SELECT 1 FROM kit_manifest_items WHERE asset_kit_id = ? LIMIT 1`,
+    [kit.id, kit.id]
+  );
+
+  const remove = query.transaction(() => {
+    if (hasHistory) {
+      const suffix = `~DEL${kit.id}`;
+      query.run(
+        'UPDATE asset_kits SET is_active = 0, kit_code = ?, qr_code = ? WHERE id = ?',
+        [`${kit.kit_code}${suffix}`, `${kit.qr_code}${suffix}`, kit.id]
+      );
+    } else {
+      query.run('DELETE FROM asset_kits WHERE id = ?', [kit.id]);
+      query.run('DELETE FROM kit_templates WHERE id = ? AND id NOT IN (SELECT kit_template_id FROM asset_kits)', [kit.kit_template_id]);
+    }
+  });
+
+  try {
+    remove();
+    logAudit(req.user.id, req.user.name, req.user.role, 'DELETE', 'ASSET_KIT', kit.id, { name: kit.name, kit_code: kit.kit_code, archived: !!hasHistory });
+    res.json({
+      success: true,
+      message: hasHistory
+        ? `Paket "${kit.name}" dihapus. Riwayat transaksi yang memakai paket ini tetap tersimpan.`
+        : `Paket "${kit.name}" berhasil dihapus.`
+    });
+  } catch (err) {
+    console.error('[Inventory] Failed to delete kit:', err);
+    res.status(500).json({ success: false, message: 'Gagal menghapus paket.' });
+  }
+});
+
 // PUT /api/kits/:id
 router.put('/kits/:id', authenticate, authorize(['admin_inventaris']), (req, res) => {
   const { name, kit_code, location_id, notes, components } = req.body;
@@ -936,22 +1388,17 @@ router.put('/kits/:id', authenticate, authorize(['admin_inventaris']), (req, res
     return res.status(400).json({ success: false, message: 'Lokasi tidak ditemukan.' });
   }
 
-  for (const component of components) {
-    const quantity = Number(component.quantity);
-    if (!component.component_name?.trim() || !Number.isInteger(quantity) || quantity < 1 ||
-        !['baik', 'rusak'].includes(component.condition || 'baik')) {
-      return res.status(400).json({ success: false, message: 'Setiap komponen harus memiliki nama, jumlah minimal 1, dan kondisi yang valid.' });
-    }
-    if (component.asset_unit_id) {
-      const asset = query.get('SELECT item_type_id FROM asset_units WHERE id = ?', [component.asset_unit_id]);
-      if (!asset) {
-        return res.status(400).json({ success: false, message: 'Salah satu unit aset komponen tidak ditemukan.' });
-      }
-      if (component.item_type_id && Number(component.item_type_id) !== asset.item_type_id) {
-        return res.status(400).json({ success: false, message: 'Katalog komponen tidak sesuai dengan jenis unit aset yang dipilih.' });
-      }
-    }
+  // Components must come from registered catalog items / asset units.
+  // Legacy components that were never linked to the catalog may stay as they are.
+  const legacyNames = new Set(
+    query.all('SELECT component_name FROM kit_components WHERE asset_kit_id = ? AND item_type_id IS NULL', [kit.id])
+      .map((row) => row.component_name.trim().toLowerCase())
+  );
+  const checked = normalizeKitComponents(components, legacyNames);
+  if (checked.error) {
+    return res.status(400).json({ success: false, message: checked.error });
   }
+  const normalizedComponents = checked.list;
 
   const updateKit = query.transaction(() => {
     query.run(`
@@ -961,26 +1408,12 @@ router.put('/kits/:id', authenticate, authorize(['admin_inventaris']), (req, res
       [name.trim(), kit_code.trim().toUpperCase(), kit_code.trim().toUpperCase(), location_id, notes?.trim() || null, kit.id]
     );
     query.run('DELETE FROM kit_components WHERE asset_kit_id = ?', [kit.id]);
-    for (const component of components) {
-      query.run(`
-        INSERT INTO kit_components (asset_kit_id, item_type_id, component_name, asset_unit_id, quantity, condition, is_required)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          kit.id,
-          component.item_type_id || null,
-          component.component_name.trim(),
-          component.asset_unit_id || null,
-          Number(component.quantity),
-          component.condition || 'baik',
-          component.is_required === 0 ? 0 : 1,
-        ]
-      );
-    }
+    insertKitComponents(kit.id, normalizedComponents);
   });
 
   try {
     updateKit();
-    logAudit(req.user.id, req.user.name, req.user.role, 'UPDATE', 'ASSET_KIT', kit.id, { name, kit_code, location_id, component_count: components.length });
+    logAudit(req.user.id, req.user.name, req.user.role, 'UPDATE', 'ASSET_KIT', kit.id, { name, kit_code, location_id, component_count: normalizedComponents.length });
     res.json({ success: true, message: 'Paket dan kelengkapannya berhasil diperbarui.' });
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {

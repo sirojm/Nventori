@@ -22,6 +22,9 @@ import {
   FileUp
 } from 'lucide-react';
 import { api } from '../services/api';
+import { QRScannerModal } from '../components/scanner/QRScannerModal';
+import { WarehouseModal } from '../components/inventory/WarehouseModal';
+import { ReconcileModal } from '../components/inventory/ReconcileModal';
 import { ItemType, AssetUnit, StockPool, AssetKit, Category, Location } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -40,6 +43,24 @@ interface KitComponentForm {
   is_required: number;
 }
 
+interface AccessoryForm {
+  name: string;
+  quantity: number;
+}
+
+const ACCESSORY_SUGGESTIONS = ['Charger', 'Baterai', 'Kabel', 'Tas / Case', 'Lensa kit', 'Remote', 'Memory card'];
+
+const emptyItemForm = () => ({
+  name: '',
+  code: '',
+  category_id: '',
+  brand_model: '',
+  unit_of_measure: 'Unit',
+  specs: '',
+  tracking_mode: 'unique_unit' as 'unique_unit' | 'quantity_pool' | 'consumable',
+  accessories: [] as AccessoryForm[],
+});
+
 const importHeaders = [
   'nama_barang',
   'kode_katalog',
@@ -52,6 +73,8 @@ const importHeaders = [
   'kode_lokasi',
   'kondisi_stok',
 ];
+// Optional columns: older CSV files without them still import fine.
+const optionalImportHeaders = ['kelengkapan'];
 
 const parseCsv = (source: string): string[][] => {
   const text = source.replace(/^\uFEFF/, '');
@@ -137,6 +160,38 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
   const [showAdjustModal, setShowAdjustModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showEditKitModal, setShowEditKitModal] = useState(false);
+  const [isCreatingKit, setIsCreatingKit] = useState(false);
+  const [savingKit, setSavingKit] = useState(false);
+  const [kitToDelete, setKitToDelete] = useState<AssetKit | null>(null);
+  const [deletingKit, setDeletingKit] = useState(false);
+  const [kitPickerSearch, setKitPickerSearch] = useState('');
+  const [showKitScanner, setShowKitScanner] = useState(false);
+  const [showWarehouseModal, setShowWarehouseModal] = useState(false);
+  const [showManageMenu, setShowManageMenu] = useState(false);
+  const manageMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close the "Kelola" menu on outside click / Escape
+  useEffect(() => {
+    if (!showManageMenu) return;
+    const onPointer = (event: MouseEvent | TouchEvent) => {
+      if (manageMenuRef.current && !manageMenuRef.current.contains(event.target as Node)) setShowManageMenu(false);
+    };
+    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && setShowManageMenu(false);
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('touchstart', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('touchstart', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [showManageMenu]);
+  const [showReconcileModal, setShowReconcileModal] = useState(false);
+  const kitFormRef = useRef<typeof kitForm | null>(null);
+  const [poolToDelete, setPoolToDelete] = useState<StockPool | null>(null);
+  const [deletingPool, setDeletingPool] = useState(false);
+  // Unfiltered lists for the kit picker (the page lists above depend on the search box)
+  const [kitCatalog, setKitCatalog] = useState<{ items: ItemType[]; assets: AssetUnit[] }>({ items: [], assets: [] });
   const [showImportModal, setShowImportModal] = useState(false);
   const [importRows, setImportRows] = useState<Array<Record<string, string>>>([]);
   const [importFileName, setImportFileName] = useState('');
@@ -152,21 +207,16 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
     notes: '',
     components: [] as KitComponentForm[],
   });
+  kitFormRef.current = kitForm;
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [savingCategory, setSavingCategory] = useState(false);
   const [generatingCode, setGeneratingCode] = useState(false);
   const [categoryForm, setCategoryForm] = useState({ name: '', code: '', description: '' });
 
   // Form states
-  const [newItem, setNewItem] = useState({
-    name: '',
-    code: '',
-    category_id: '',
-    brand_model: '',
-    unit_of_measure: 'Unit',
-    specs: '',
-    tracking_mode: 'unique_unit' as 'unique_unit' | 'quantity_pool' | 'consumable',
-  });
+  const [newItem, setNewItem] = useState(emptyItemForm);
+  const [accessoryDraft, setAccessoryDraft] = useState({ name: '', quantity: 1 });
+  const [showAccessoryEditor, setShowAccessoryEditor] = useState(false);
 
   const [newAsset, setNewAsset] = useState({
     item_type_id: '',
@@ -300,8 +350,14 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
       return;
     }
     try {
+      // Include a half-typed accessory so it is not silently lost on save
+      const pendingName = accessoryDraft.name.trim();
+      const accessories = pendingName && !newItem.accessories.some((a) => a.name.toLowerCase() === pendingName.toLowerCase())
+        ? [...newItem.accessories, { name: pendingName, quantity: accessoryDraft.quantity }]
+        : newItem.accessories;
       const payload = {
         ...newItem,
+        accessories,
         category_id: Number(newItem.category_id),
       };
       const res = editingItemId
@@ -311,15 +367,8 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
         success(res.message);
         setShowAddItemModal(false);
         setEditingItemId(null);
-        setNewItem({
-          name: '',
-          code: '',
-          category_id: '',
-          brand_model: '',
-          unit_of_measure: 'Unit',
-          specs: '',
-          tracking_mode: 'unique_unit',
-        });
+        setNewItem(emptyItemForm());
+        setAccessoryDraft({ name: '', quantity: 1 });
         loadAll();
       }
     } catch (err: any) {
@@ -337,12 +386,68 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
       unit_of_measure: item.unit_of_measure,
       specs: item.specs || '',
       tracking_mode: item.tracking_mode,
+      accessories: (item.accessories || []).map((accessory) => ({ name: accessory.name, quantity: accessory.quantity })),
     });
+    setAccessoryDraft({ name: '', quantity: 1 });
+    setShowAccessoryEditor((item.accessories || []).length > 0);
     setShowAddItemModal(true);
+  };
+
+  const addAccessory = (rawName: string, quantity = 1) => {
+    const name = rawName.trim().replace(/\s+/g, ' ');
+    if (!name) return;
+    if (newItem.accessories.some((accessory) => accessory.name.toLowerCase() === name.toLowerCase())) {
+      error(`"${name}" sudah ada di daftar kelengkapan.`);
+      return;
+    }
+    setNewItem((item) => ({
+      ...item,
+      accessories: [...item.accessories, { name, quantity: Math.min(99, Math.max(1, Math.round(quantity) || 1)) }],
+    }));
+    setAccessoryDraft({ name: '', quantity: 1 });
+  };
+
+  const removeAccessory = (name: string) =>
+    setNewItem((item) => ({ ...item, accessories: item.accessories.filter((accessory) => accessory.name !== name) }));
+
+  const loadKitCatalog = async () => {
+    try {
+      const [itemRes, assetRes] = await Promise.all([api.getItems({}), api.getAssets({})]);
+      setKitCatalog({
+        items: itemRes.success ? itemRes.items : [],
+        assets: assetRes.success ? assetRes.assets : [],
+      });
+    } catch (err) {
+      error(err instanceof Error ? err.message : 'Gagal memuat katalog untuk paket.');
+    }
+  };
+
+  const closeKitModal = () => {
+    setShowEditKitModal(false);
+    setEditingKit(null);
+    setIsCreatingKit(false);
+    setKitPickerSearch('');
+  };
+
+  const openCreateKit = () => {
+    setEditingKit(null);
+    setIsCreatingKit(true);
+    setKitPickerSearch('');
+    setKitForm({
+      name: '',
+      kit_code: '',
+      location_id: locations[0] ? String(locations[0].id) : '',
+      notes: '',
+      components: [],
+    });
+    setShowEditKitModal(true);
+    loadKitCatalog();
   };
 
   const openEditKit = (kit: AssetKit) => {
     setEditingKit(kit);
+    setIsCreatingKit(false);
+    setKitPickerSearch('');
     setKitForm({
       name: kit.name,
       kit_code: kit.kit_code,
@@ -358,17 +463,103 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
       })),
     });
     setShowEditKitModal(true);
+    loadKitCatalog();
+  };
+
+  const addKitComponent = (item: ItemType) => {
+    setKitForm((form) => {
+      const existingIndex = form.components.findIndex(
+        (component) => component.item_type_id === String(item.id) && !component.asset_unit_id
+      );
+      if (existingIndex >= 0) {
+        return {
+          ...form,
+          components: form.components.map((component, i) =>
+            i === existingIndex ? { ...component, quantity: component.quantity + 1 } : component
+          ),
+        };
+      }
+      return {
+        ...form,
+        components: [
+          ...form.components,
+          {
+            component_name: item.name,
+            item_type_id: String(item.id),
+            asset_unit_id: '',
+            quantity: 1,
+            condition: 'baik' as const,
+            is_required: 1,
+          },
+        ],
+      };
+    });
+  };
+
+  const kitPickerItems = kitCatalog.items.filter((item) => {
+    const q = kitPickerSearch.trim().toLowerCase();
+    if (!q) return true;
+    return [item.name, item.code, item.brand_model, item.category_name]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(q));
+  });
+
+  // Scanner callback outlives the render that created it, so read the form through a ref.
+  const addKitAssetFromScan = (asset: AssetUnit): 'added' | 'duplicate' | 'unavailable' => {
+    const current = kitFormRef.current;
+    if (!current) return 'unavailable';
+    if (current.components.some((component) => component.asset_unit_id === String(asset.id))) return 'duplicate';
+    const next = {
+      ...current,
+      components: [
+        ...current.components,
+        {
+          component_name: asset.item_name || asset.asset_code,
+          item_type_id: String(asset.item_type_id),
+          asset_unit_id: String(asset.id),
+          quantity: 1,
+          condition: 'baik' as const,
+          is_required: 1,
+        },
+      ],
+    };
+    kitFormRef.current = next;
+    setKitForm(next);
+    return 'added';
+  };
+
+  const handleDeletePool = async () => {
+    if (!poolToDelete) return;
+    setDeletingPool(true);
+    try {
+      const res = await api.deleteStockPool(poolToDelete.id);
+      if (res.success) {
+        success(res.message);
+        setPoolToDelete(null);
+        await loadAll();
+      }
+    } catch (err: any) {
+      error(err.message || 'Gagal menghapus catatan stok.');
+      setPoolToDelete(null);
+    } finally {
+      setDeletingPool(false);
+    }
   };
 
   const handleSaveKit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingKit || !kitForm.name.trim() || !kitForm.kit_code.trim() || !kitForm.location_id) {
+    if (!kitForm.name.trim() || !kitForm.location_id || (editingKit && !kitForm.kit_code.trim())) {
       error('Nama paket, kode, dan lokasi wajib diisi.');
       return;
     }
+    if (!kitForm.components.length) {
+      error('Tambahkan minimal satu komponen ke paket.');
+      return;
+    }
 
+    setSavingKit(true);
     try {
-      const res = await api.updateKit(editingKit.id, {
+      const payload = {
         ...kitForm,
         location_id: Number(kitForm.location_id),
         components: kitForm.components.map((component) => ({
@@ -376,20 +567,40 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
           item_type_id: component.item_type_id ? Number(component.item_type_id) : null,
           asset_unit_id: component.asset_unit_id ? Number(component.asset_unit_id) : null,
         })),
-      });
+      };
+      const res = editingKit ? await api.updateKit(editingKit.id, payload) : await api.createKit(payload);
       if (res.success) {
         success(res.message);
-        setShowEditKitModal(false);
-        setEditingKit(null);
+        closeKitModal();
         await loadAll();
       }
     } catch (err: any) {
-      error(err.message || 'Gagal memperbarui paket.');
+      error(err.message || 'Gagal menyimpan paket.');
+    } finally {
+      setSavingKit(false);
+    }
+  };
+
+  const handleDeleteKit = async () => {
+    if (!kitToDelete) return;
+    setDeletingKit(true);
+    try {
+      const res = await api.deleteKit(kitToDelete.id);
+      if (res.success) {
+        success(res.message);
+        setKitToDelete(null);
+        await loadAll();
+      }
+    } catch (err: any) {
+      error(err.message || 'Gagal menghapus paket.');
+      setKitToDelete(null);
+    } finally {
+      setDeletingKit(false);
     }
   };
 
   const handleDownloadImportTemplate = () => {
-    const csv = `\uFEFF${importHeaders.join(';')}\r\n`;
+    const csv = `\uFEFF${[...importHeaders, ...optionalImportHeaders].join(';')}\r\n`;
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
@@ -419,7 +630,8 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
         throw new Error(`Kolom wajib tidak ditemukan: ${missingHeaders.join(', ')}.`);
       }
 
-      const headerIndexes = importHeaders.map((header) => headers.indexOf(header));
+      const allHeaders = [...importHeaders, ...optionalImportHeaders];
+      const headerIndexes = allHeaders.map((header) => headers.indexOf(header));
       const dataRows = records.slice(1);
       if (dataRows.length > 500) throw new Error('Maksimal 500 baris barang dapat diimpor sekaligus.');
 
@@ -428,7 +640,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
           throw new Error(`Jumlah kolom pada baris ${rowIndex + 2} tidak sesuai dengan header.`);
         }
         return Object.fromEntries(
-          importHeaders.map((header, index) => [header, record[headerIndexes[index]]?.trim() || ''])
+          allHeaders.map((header, index) => [header, headerIndexes[index] >= 0 ? record[headerIndexes[index]]?.trim() || '' : ''])
         );
       });
       setImportRows(parsedRows.map((row) => ({
@@ -442,6 +654,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
         opening_stock: row.stok_awal,
         location_code: row.kode_lokasi,
         condition: row.kondisi_stok,
+        accessories: row.kelengkapan,
       })));
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Gagal membaca file CSV.');
@@ -551,9 +764,13 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
   };
 
   const handleDeleteItem = async (item: ItemType) => {
-    if (!window.confirm(`Hapus katalog "${item.name}"? Katalog yang masih memiliki unit aktif atau stok tidak dapat dihapus. Riwayat tidak akan dihapus.`)) return;
+    const stockNote =
+      item.tracking_mode !== 'unique_unit' && (item.pool_total || 0) > 0
+        ? ` Stok tercatat ${item.pool_total} ${item.unit_of_measure} akan ikut dihapus.`
+        : '';
+    if (!window.confirm(`Hapus katalog "${item.name}"?${stockNote} Riwayat transaksi tidak ikut dihapus. Barang yang masih dipakai di transaksi aktif tidak dapat dihapus.`)) return;
     try {
-      const result = await api.deleteItem(item.id);
+      const result = await api.deleteItem(item.id, { clear_stock: true });
       success(result.message);
       await loadAll();
       if (showInactiveItems) await loadInactiveItems();
@@ -622,45 +839,75 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
     <div className="p-4 md:p-8 space-y-6 max-w-7xl mx-auto pb-24 md:pb-12">
       {/* Header & Controls */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <h2 className="text-xl font-bold text-slate-900 tracking-tight">Katalog & Master Inventaris</h2>
           <p className="text-xs text-slate-500">Kelola jenis barang, unit aset unik, stok kuantitas, dan paket kelengkapan</p>
         </div>
 
         {canManage && (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowImportModal(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 text-xs font-semibold shadow-sm transition cursor-pointer"
-            >
-              <FileUp className="w-4 h-4 text-slate-500" />
-              <span>Import CSV</span>
-            </button>
-            <button
-              onClick={() => setShowCategoryModal(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 text-xs font-semibold shadow-sm transition cursor-pointer"
-            >
-              <Tags className="w-4 h-4 text-slate-500" />
-              <span>Kelola Kategori</span>
-            </button>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            {/* Secondary actions live in one menu so the header never overflows */}
+            <div className="relative" ref={manageMenuRef}>
+              <button
+                type="button"
+                onClick={() => setShowManageMenu((open) => !open)}
+                aria-haspopup="menu"
+                aria-expanded={showManageMenu}
+                className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 text-xs font-semibold shadow-sm transition cursor-pointer whitespace-nowrap"
+              >
+                <SlidersHorizontal className="w-4 h-4 text-slate-500" />
+                <span>Kelola</span>
+                <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${showManageMenu ? 'rotate-180' : ''}`} />
+              </button>
+              {showManageMenu && (
+                <div
+                  role="menu"
+                  className="absolute left-0 sm:left-auto sm:right-0 top-full mt-2 z-30 w-64 rounded-2xl bg-white border border-slate-200 shadow-xl p-1.5 animate-in fade-in zoom-in-95 duration-100"
+                >
+                  {[
+                    { icon: FileUp, label: 'Import CSV', desc: 'Impor katalog barang dari file', action: () => setShowImportModal(true) },
+                    { icon: Tags, label: 'Kelola Kategori', desc: 'Tambah, ubah, nonaktifkan kategori', action: () => setShowCategoryModal(true) },
+                    { icon: Layers, label: 'Kelola Gudang', desc: 'Tambah, ubah, hapus gudang', action: () => setShowWarehouseModal(true) },
+                    { icon: RotateCcw, label: 'Sinkronkan Data', desc: 'Cocokkan stok & status dengan transaksi', action: () => setShowReconcileModal(true) },
+                  ].map((entry) => {
+                    const Icon = entry.icon;
+                    return (
+                      <button
+                        key={entry.label}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setShowManageMenu(false);
+                          entry.action();
+                        }}
+                        className="w-full flex items-start gap-3 px-3 py-2.5 rounded-xl hover:bg-slate-50 text-left cursor-pointer"
+                      >
+                        <span className="mt-0.5 w-8 h-8 rounded-lg bg-slate-100 text-slate-500 flex items-center justify-center flex-shrink-0">
+                          <Icon className="w-4 h-4" />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-xs font-semibold text-slate-800">{entry.label}</span>
+                          <span className="block text-[11px] text-slate-500 leading-snug">{entry.desc}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             <button
               onClick={() => {
                 setEditingItemId(null);
-                setNewItem({
-                  name: '',
-                  code: '',
-                  category_id: '',
-                  brand_model: '',
-                  unit_of_measure: 'Unit',
-                  specs: '',
-                  tracking_mode: 'unique_unit',
-                });
+                setNewItem(emptyItemForm());
+                setAccessoryDraft({ name: '', quantity: 1 });
+                setShowAccessoryEditor(false);
                 setShowAddItemModal(true);
               }}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 text-xs font-semibold shadow-sm transition cursor-pointer"
+              className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 text-xs font-semibold shadow-sm transition cursor-pointer whitespace-nowrap"
             >
               <Plus className="w-4 h-4 text-slate-500" />
-              <span>Tambah Jenis Barang</span>
+              <span>Jenis Barang</span>
             </button>
             <button
               onClick={() => {
@@ -674,22 +921,22 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
                 });
                 setShowAddAssetModal(true);
               }}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-forest-800 hover:bg-forest-900 text-white text-xs font-semibold shadow-sm transition cursor-pointer"
+              className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-forest-800 hover:bg-forest-900 text-white text-xs font-semibold shadow-sm transition cursor-pointer whitespace-nowrap"
             >
               <Plus className="w-4 h-4" />
-              <span>Registrasi Unit Fisik</span>
+              <span>Unit Fisik</span>
             </button>
           </div>
         )}
       </div>
 
-      {/* Tabs */}
-      <div className="flex items-center gap-2 border-b border-slate-200 overflow-x-auto pb-px">
+      {/* Tabs: 2x2 grid on phones (no sideways scrolling), underline tabs from sm up */}
+      <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2 sm:border-b sm:border-slate-200 sm:overflow-x-auto sm:pb-px">
         {[
-          { id: 'items', label: 'Jenis Barang & Katalog', icon: Package, count: items.length },
-          { id: 'assets', label: 'Unit Aset Fisik Unik', icon: Box, count: assets.length },
-          { id: 'pools', label: 'Stok Kuantitas & Habis Pakai', icon: Layers, count: pools.length },
-          { id: 'kits', label: 'Paket Kelengkapan (Kits)', icon: SlidersHorizontal, count: kits.length },
+          { id: 'items', label: 'Jenis Barang & Katalog', short: 'Jenis Barang', icon: Package, count: items.length },
+          { id: 'assets', label: 'Unit Aset Fisik Unik', short: 'Unit Aset', icon: Box, count: assets.length },
+          { id: 'pools', label: 'Stok Kuantitas & Habis Pakai', short: 'Stok', icon: Layers, count: pools.length },
+          { id: 'kits', label: 'Paket Kelengkapan (Kits)', short: 'Paket', icon: SlidersHorizontal, count: kits.length },
         ].map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -697,15 +944,17 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition whitespace-nowrap cursor-pointer ${
+              aria-pressed={isActive}
+              className={`flex items-center gap-2 min-w-0 px-3 py-2.5 sm:px-4 text-xs font-bold border rounded-xl sm:rounded-none sm:border-0 sm:border-b-2 transition sm:whitespace-nowrap cursor-pointer ${
                 isActive
-                  ? 'border-forest-800 text-forest-800'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
+                  ? 'border-forest-800 text-forest-800 bg-emerald-50 sm:bg-transparent'
+                  : 'border-slate-200 bg-white text-slate-600 sm:bg-transparent sm:border-transparent sm:text-slate-500 hover:text-slate-800'
               }`}
             >
-              <Icon className="w-4 h-4" />
-              <span>{tab.label}</span>
-              <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${isActive ? 'bg-emerald-100 text-forest-800' : 'bg-slate-100 text-slate-500'}`}>
+              <Icon className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate sm:hidden">{tab.short}</span>
+              <span className="hidden sm:inline">{tab.label}</span>
+              <span className={`ml-auto sm:ml-0 flex-shrink-0 px-1.5 py-0.5 rounded-full text-[10px] ${isActive ? 'bg-emerald-100 text-forest-800' : 'bg-slate-100 text-slate-500'}`}>
                 {tab.count}
               </span>
             </button>
@@ -772,6 +1021,20 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
                 <h3 className="font-bold text-sm text-slate-900 mt-2">{it.name}</h3>
                 {it.brand_model && <p className="text-xs text-slate-500">{it.brand_model}</p>}
                 {it.specs && <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">{it.specs}</p>}
+                {!!it.accessories?.length && (
+                  <div className="mt-2 flex flex-wrap gap-1" title="Kelengkapan barang">
+                    {it.accessories.slice(0, 4).map((accessory) => (
+                      <span key={accessory.name} className="text-[10px] px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600">
+                        {accessory.name}{accessory.quantity > 1 ? ` ×${accessory.quantity}` : ''}
+                      </span>
+                    ))}
+                    {it.accessories.length > 4 && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-500">
+                        +{it.accessories.length - 4} lagi
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="pt-3 border-t border-slate-100 space-y-3 text-xs">
@@ -874,7 +1137,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
             </div>
           )}
           <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
+            <table className="rt w-full text-xs text-left">
               <thead>
                 <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-semibold">
                   <th className="p-3.5">Kode Aset & Serial</th>
@@ -966,7 +1229,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
       {activeTab === 'pools' && (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
+            <table className="rt w-full text-xs text-left">
               <thead>
                 <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-semibold">
                   <th className="p-3.5">Nama Item Stok</th>
@@ -989,7 +1252,12 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
                   <tr key={pool.id} className="hover:bg-slate-50/60 transition">
                     <td className="p-3.5">
                       <div className="font-bold text-slate-900">{pool.item_name}</div>
-                      <div className="text-[10px] font-mono text-slate-400">{pool.item_code}</div>
+                      <div className="text-[10px] font-mono text-slate-400">
+                        {pool.item_code}
+                        {pool.condition === 'rusak' && (
+                          <span className="ml-1.5 font-sans font-bold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700">Rusak</span>
+                        )}
+                      </div>
                     </td>
                     <td className="p-3.5 text-slate-700">{pool.location_name}</td>
                     <td className="p-3.5 text-center font-bold text-slate-900">
@@ -1002,17 +1270,42 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
                       {pool.quantity_checked_out} {pool.unit_of_measure}
                     </td>
                     {canManage && (
-                      <td className="p-3.5 text-right">
-                        <button
-                          onClick={() => {
-                            setSelectedPool(pool);
-                            setAdjustData({ new_quantity: pool.quantity_total, reason: '' });
-                            setShowAdjustModal(true);
-                          }}
-                          className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-forest-800 font-semibold text-[11px] transition cursor-pointer"
-                        >
-                          Edit Stok
-                        </button>
+                      <td className="p-3.5 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1.5">
+                          <button
+                            onClick={() => {
+                              setSelectedPool(pool);
+                              setAdjustData({ new_quantity: pool.quantity_total, reason: '' });
+                              setShowAdjustModal(true);
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-forest-800 font-semibold text-[11px] transition cursor-pointer"
+                          >
+                            Edit Stok
+                          </button>
+                          {(() => {
+                            const isOnlyPool = pools.filter((entry) => entry.item_type_id === pool.item_type_id).length <= 1;
+                            const inUse = pool.quantity_checked_out > 0 || pool.quantity_reserved > 0;
+                            const blocked = isOnlyPool || inUse;
+                            return (
+                              <button
+                                onClick={() => setPoolToDelete(pool)}
+                                disabled={blocked}
+                                title={
+                                  isOnlyPool
+                                    ? 'Satu-satunya catatan stok barang ini. Gunakan Edit Stok atau hapus barang dari katalog.'
+                                    : inUse
+                                      ? 'Masih ada stok yang dipesan/dipinjam'
+                                      : 'Hapus catatan stok ini'
+                                }
+                                aria-label={`Hapus catatan stok ${pool.item_name}`}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-[11px] transition cursor-pointer"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                Hapus
+                              </button>
+                            );
+                          })()}
+                        </div>
                       </td>
                     )}
                   </tr>
@@ -1025,6 +1318,27 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
 
       {/* Tab 4: Kits / Packages (e.g. Drone 01 per Blueprint Section 5) */}
       {activeTab === 'kits' && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl bg-emerald-50/60 border border-emerald-100 kit-banner">
+            <p className="text-xs text-emerald-900">
+              <span className="font-bold">Paket</span> mengelompokkan alat yang dipakai untuk kegiatan tertentu, misalnya seminar atau liputan.
+              Komponennya diambil dari katalog dan aset yang sudah terdaftar.
+            </p>
+            {canManage && (
+              <button
+                onClick={openCreateKit}
+                className="flex-shrink-0 inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-forest-800 hover:bg-forest-900 text-white text-xs font-semibold shadow-sm transition cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Buat Paket Baru</span>
+              </button>
+            )}
+          </div>
+          {kits.length === 0 && (
+            <div className="p-8 text-center text-xs text-slate-500 rounded-2xl border border-dashed border-slate-200">
+              Belum ada paket. {canManage ? 'Klik "Buat Paket Baru" untuk mulai mengelompokkan alat.' : ''}
+            </div>
+          )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {kits.map((kit) => (
             <div key={kit.id} className="p-5 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-4">
@@ -1039,24 +1353,37 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
                     </span>
                   </div>
                   <h3 className="font-bold text-base text-slate-900 mt-1">{kit.name}</h3>
-                  <p className="text-xs text-slate-500">{kit.template_name} • {kit.location_name}</p>
+                  <p className="text-xs text-slate-500">{kit.location_name} • {kit.components?.length || 0} komponen</p>
+                  {kit.notes && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">{kit.notes}</p>}
                 </div>
                 {canManage && (
-                  <button
-                    onClick={() => openEditKit(kit)}
-                    disabled={kit.status === 'dipakai'}
-                    className="inline-flex flex-shrink-0 items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed text-slate-700 font-semibold text-[11px] transition cursor-pointer"
-                    title={kit.status === 'dipakai' ? 'Paket sedang dipakai dan tidak dapat diedit' : 'Edit paket dan kelengkapannya'}
-                  >
-                    <Edit className="w-3 h-3" />
-                    Edit Paket
-                  </button>
+                  <div className="flex flex-shrink-0 items-center gap-1.5">
+                    <button
+                      onClick={() => openEditKit(kit)}
+                      disabled={kit.status === 'dipakai'}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed text-slate-700 font-semibold text-[11px] transition cursor-pointer"
+                      title={kit.status === 'dipakai' ? 'Paket sedang dipakai dan tidak dapat diedit' : 'Edit paket dan isinya'}
+                    >
+                      <Edit className="w-3 h-3" />
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => setKitToDelete(kit)}
+                      disabled={kit.status === 'dipakai'}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 disabled:opacity-40 disabled:cursor-not-allowed text-rose-600 font-semibold text-[11px] transition cursor-pointer"
+                      title={kit.status === 'dipakai' ? 'Paket sedang dipakai dan tidak dapat dihapus' : 'Hapus paket'}
+                      aria-label={`Hapus paket ${kit.name}`}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      Hapus
+                    </button>
+                  </div>
                 )}
               </div>
 
               {/* Components Breakdown */}
               <div className="space-y-2 pt-2 border-t border-slate-100">
-                <span className="text-xs font-bold text-slate-700 block">Komponen Manifest Wajib:</span>
+                <span className="text-xs font-bold text-slate-700 block">Isi Paket:</span>
                 <div className="space-y-1.5">
                   {kit.components?.map((c) => (
                     <div key={c.id} className="flex items-center justify-between text-xs p-2 rounded-lg bg-slate-50 border border-slate-100">
@@ -1072,6 +1399,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
               </div>
             </div>
           ))}
+        </div>
         </div>
       )}
 
@@ -1109,7 +1437,8 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
             </div>
 
             <div className="space-y-2 text-[11px] text-slate-600">
-              <p><strong>Kolom:</strong> nama_barang, kode_katalog, kode_kategori, merek_model, satuan, mode_pelacakan, spesifikasi, stok_awal, kode_lokasi, kondisi_stok.</p>
+              <p><strong>Kolom wajib:</strong> nama_barang, kode_katalog, kode_kategori, merek_model, satuan, mode_pelacakan, spesifikasi, stok_awal, kode_lokasi, kondisi_stok.</p>
+              <p><strong>Kolom opsional:</strong> kelengkapan — pisahkan dengan <span className="font-mono">|</span>, jumlah setelah titik dua (default 1). Contoh: <span className="font-mono">Charger kamera|Baterai:2|Lensa kit</span>. Kelengkapan hanya menjadi keterangan barang, bukan katalog atau aset baru.</p>
               <p><strong>Mode:</strong> unique_unit, quantity_pool, atau consumable. unique_unit harus stok_awal 0 dan unit fisiknya didaftarkan terpisah.</p>
               <p><strong>Kondisi stok:</strong> baik atau rusak. Untuk stok kuantitas, kode_lokasi harus menunjuk lokasi aktif.</p>
               <div>
@@ -1167,23 +1496,18 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
         </div>
       )}
 
-      {/* Modal: Edit Kit */}
-      {showEditKitModal && editingKit && (
+      {/* Modal: Create / Edit Kit (activity package) */}
+      {showEditKitModal && (editingKit || isCreatingKit) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
-          <div className="relative w-full max-w-2xl max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 sm:p-6 space-y-4">
-            <div className="flex items-center justify-between border-b pb-3">
+          <div className="relative w-full max-w-3xl max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 sm:p-6 space-y-4">
+            <div className="flex items-start justify-between gap-3 border-b pb-3">
               <div>
-                <h3 className="font-bold text-slate-900 text-sm">Edit Paket & Kelengkapan</h3>
-                <p className="text-[11px] text-slate-500 mt-1">Status paket: {editingKit.status.replace('_', ' ')}</p>
+                <h3 className="font-bold text-slate-900 text-sm">{editingKit ? 'Edit Paket' : 'Buat Paket Baru'}</h3>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Paket mengelompokkan alat untuk satu kegiatan (misalnya Seminar). Komponen dipilih dari katalog dan aset yang sudah terdaftar.
+                </p>
               </div>
-              <button
-                onClick={() => {
-                  setShowEditKitModal(false);
-                  setEditingKit(null);
-                }}
-                className="text-slate-400 hover:text-slate-600"
-                aria-label="Tutup"
-              >
+              <button onClick={closeKitModal} className="text-slate-400 hover:text-slate-600" aria-label="Tutup">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -1196,22 +1520,24 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
                     required
                     value={kitForm.name}
                     onChange={(e) => setKitForm({ ...kitForm, name: e.target.value })}
+                    placeholder="Contoh: Paket Seminar"
                     className="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500"
                   />
                 </div>
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">Kode Paket / QR:</label>
                   <input
-                    required
+                    required={!!editingKit}
                     value={kitForm.kit_code}
                     onChange={(e) => setKitForm({ ...kitForm, kit_code: e.target.value.toUpperCase() })}
+                    placeholder={editingKit ? '' : 'Kosongkan untuk dibuat otomatis'}
                     className="w-full px-3 py-2 border rounded-xl font-mono focus:ring-2 focus:ring-emerald-500"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">Lokasi:</label>
+                <label className="block font-semibold text-slate-700 mb-1">Lokasi Penyimpanan:</label>
                 <select
                   required
                   value={kitForm.location_id}
@@ -1225,134 +1551,185 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
                 </select>
               </div>
 
+              {/* Catalog picker */}
+              <div className="rounded-xl border border-slate-200 overflow-hidden">
+                <div className="p-3 bg-slate-50 border-b border-slate-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-slate-800">Pilih dari Katalog</h4>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-500 hidden sm:inline">{kitCatalog.items.length} barang terdaftar</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowKitScanner(true)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-forest-800 hover:bg-forest-900 text-white font-semibold cursor-pointer"
+                      >
+                        <QrCode className="w-3.5 h-3.5" />
+                        Scan QR
+                      </button>
+                    </div>
+                  </div>
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                    <input
+                      type="text"
+                      value={kitPickerSearch}
+                      onChange={(e) => setKitPickerSearch(e.target.value)}
+                      placeholder="Cari nama, kode, atau merek barang..."
+                      className="w-full pl-8 pr-3 py-2 border rounded-lg bg-white focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                </div>
+                <div className="max-h-48 overflow-y-auto divide-y divide-slate-100">
+                  {kitPickerItems.length === 0 && (
+                    <p className="p-4 text-center text-slate-500">
+                      {kitCatalog.items.length === 0
+                        ? 'Katalog masih kosong. Daftarkan barang terlebih dahulu.'
+                        : 'Tidak ada barang yang cocok.'}
+                    </p>
+                  )}
+                  {kitPickerItems.map((item) => {
+                    const addedQty = kitForm.components
+                      .filter((component) => component.item_type_id === String(item.id))
+                      .reduce((sum, component) => sum + component.quantity, 0);
+                    return (
+                      <div key={item.id} className="flex items-center gap-3 px-3 py-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-slate-800 truncate">{item.name}</div>
+                          <div className="text-[10px] text-slate-500 font-mono truncate">
+                            {item.code} · {item.category_name}
+                            {item.tracking_mode === 'unique_unit'
+                              ? ` · ${item.units_available || 0} unit tersedia`
+                              : ` · stok ${item.pool_available || 0} ${item.unit_of_measure}`}
+                          </div>
+                        </div>
+                        {addedQty > 0 && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                            {addedQty} di paket
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => addKitComponent(item)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-50 text-forest-800 font-semibold hover:bg-emerald-100 cursor-pointer"
+                        >
+                          <Plus className="w-3 h-3" />
+                          Tambah
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Components in this package */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <h4 className="font-bold text-slate-800">Daftar Kelengkapan</h4>
-                  <button
-                    type="button"
-                    onClick={() => setKitForm({
-                      ...kitForm,
-                      components: [...kitForm.components, {
-                        component_name: '',
-                        item_type_id: '',
-                        asset_unit_id: '',
-                        quantity: 1,
-                        condition: 'baik',
-                        is_required: 1,
-                      }],
-                    })}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-50 text-forest-800 font-semibold hover:bg-emerald-100"
-                  >
-                    <Plus className="w-3 h-3" />
-                    Tambah Komponen
-                  </button>
+                  <h4 className="font-bold text-slate-800">Isi Paket ({kitForm.components.length} komponen)</h4>
+                  {kitForm.components.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setKitForm({ ...kitForm, components: [] })}
+                      className="text-[11px] font-semibold text-slate-500 hover:text-rose-600 cursor-pointer"
+                    >
+                      Kosongkan
+                    </button>
+                  )}
                 </div>
 
                 {kitForm.components.length === 0 && (
-                  <p className="p-3 text-center text-slate-500 border border-dashed rounded-xl">Belum ada komponen. Tambahkan kelengkapan paket.</p>
+                  <p className="p-4 text-center text-slate-500 border border-dashed rounded-xl">
+                    Belum ada komponen. Pilih barang dari katalog di atas.
+                  </p>
                 )}
-                {kitForm.components.map((component, index) => (
-                  <div key={index} className="p-3 border border-slate-200 rounded-xl space-y-2">
-                    <div className="flex items-start gap-2">
-                      <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
+
+                {kitForm.components.map((component, index) => {
+                  const item = kitCatalog.items.find((entry) => String(entry.id) === component.item_type_id);
+                  const isUnique = item?.tracking_mode === 'unique_unit';
+                  const unitOptions = kitCatalog.assets.filter(
+                    (asset) =>
+                      String(asset.item_type_id) === component.item_type_id &&
+                      (asset.status === 'tersedia' || String(asset.id) === component.asset_unit_id)
+                  );
+                  const takenUnits = new Set(
+                    kitForm.components.filter((_, i) => i !== index).map((entry) => entry.asset_unit_id).filter(Boolean)
+                  );
+                  const update = (patch: Partial<KitComponentForm>) =>
+                    setKitForm({
+                      ...kitForm,
+                      components: kitForm.components.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)),
+                    });
+                  return (
+                    <div key={index} className="p-3 border border-slate-200 rounded-xl">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-800 truncate">{component.component_name || item?.name}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            {item ? item.code : (
+                              <span className="text-amber-700 font-sans font-semibold">Belum tertaut ke katalog (data lama)</span>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setKitForm({
+                            ...kitForm,
+                            components: kitForm.components.filter((_, i) => i !== index),
+                          })}
+                          className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                          aria-label={`Hapus komponen ${component.component_name || index + 1}`}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {isUnique && (
+                          <div className="col-span-2">
+                            <label className="block font-medium text-slate-600 mb-1">Unit spesifik (opsional):</label>
+                            <select
+                              value={component.asset_unit_id}
+                              onChange={(e) => update({
+                                asset_unit_id: e.target.value,
+                                quantity: e.target.value ? 1 : component.quantity,
+                              })}
+                              className="w-full px-2.5 py-2 border rounded-lg bg-white"
+                            >
+                              <option value="">Tanpa unit tertentu</option>
+                              {unitOptions.map((asset) => (
+                                <option key={asset.id} value={asset.id} disabled={takenUnits.has(String(asset.id))}>
+                                  {asset.asset_code}{asset.serial_number ? ` · SN ${asset.serial_number}` : ''}
+                                  {takenUnits.has(String(asset.id)) ? ' (sudah di paket)' : ''}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
                         <div>
-                          <label className="block font-medium text-slate-600 mb-1">Nama Komponen:</label>
+                          <label className="block font-medium text-slate-600 mb-1">Jumlah:</label>
                           <input
+                            type="number"
+                            min="1"
                             required
-                            value={component.component_name}
-                            onChange={(e) => setKitForm({
-                              ...kitForm,
-                              components: kitForm.components.map((entry, i) => i === index ? { ...entry, component_name: e.target.value } : entry),
-                            })}
-                            className="w-full px-2.5 py-2 border rounded-lg focus:ring-2 focus:ring-emerald-500"
+                            disabled={!!component.asset_unit_id}
+                            value={component.quantity}
+                            onChange={(e) => update({ quantity: Math.max(1, Number(e.target.value) || 1) })}
+                            className="w-full px-2.5 py-2 border rounded-lg font-mono disabled:bg-slate-50 disabled:text-slate-400"
                           />
                         </div>
                         <div>
-                          <label className="block font-medium text-slate-600 mb-1">Katalog terkait (opsional):</label>
+                          <label className="block font-medium text-slate-600 mb-1">Kondisi:</label>
                           <select
-                            value={component.item_type_id}
-                            onChange={(e) => setKitForm({
-                              ...kitForm,
-                              components: kitForm.components.map((entry, i) => i === index ? { ...entry, item_type_id: e.target.value } : entry),
-                            })}
+                            value={component.condition}
+                            onChange={(e) => update({ condition: e.target.value as 'baik' | 'rusak' })}
                             className="w-full px-2.5 py-2 border rounded-lg bg-white"
                           >
-                            <option value="">Tidak ditautkan</option>
-                            {items.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                            <option value="baik">Baik</option>
+                            <option value="rusak">Rusak</option>
                           </select>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setKitForm({
-                          ...kitForm,
-                          components: kitForm.components.filter((_, i) => i !== index),
-                        })}
-                        className="mt-5 p-2 text-rose-600 hover:bg-rose-50 rounded-lg"
-                        aria-label={`Hapus komponen ${component.component_name || index + 1}`}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <div>
-                        <label className="block font-medium text-slate-600 mb-1">Unit aset (opsional):</label>
-                        <select
-                          value={component.asset_unit_id}
-                          onChange={(e) => {
-                            const selectedAsset = assets.find((asset) => String(asset.id) === e.target.value);
-                            setKitForm({
-                              ...kitForm,
-                              components: kitForm.components.map((entry, i) => i === index
-                                ? {
-                                    ...entry,
-                                    asset_unit_id: e.target.value,
-                                    item_type_id: selectedAsset ? String(selectedAsset.item_type_id) : entry.item_type_id,
-                                    component_name: selectedAsset?.item_name || entry.component_name,
-                                  }
-                                : entry),
-                            });
-                          }}
-                          className="w-full px-2.5 py-2 border rounded-lg bg-white"
-                        >
-                          <option value="">Tidak ditautkan</option>
-                          {component.asset_unit_id && !assets.some((asset) => String(asset.id) === component.asset_unit_id) && (
-                            <option value={component.asset_unit_id}>Unit aset #{component.asset_unit_id}</option>
-                          )}
-                          {assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.asset_code} — {asset.item_name}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block font-medium text-slate-600 mb-1">Jumlah:</label>
-                        <input
-                          type="number"
-                          min="1"
-                          required
-                          value={component.quantity}
-                          onChange={(e) => setKitForm({
-                            ...kitForm,
-                            components: kitForm.components.map((entry, i) => i === index ? { ...entry, quantity: Number(e.target.value) } : entry),
-                          })}
-                          className="w-full px-2.5 py-2 border rounded-lg font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block font-medium text-slate-600 mb-1">Kondisi:</label>
-                        <select
-                          value={component.condition}
-                          onChange={(e) => setKitForm({
-                            ...kitForm,
-                            components: kitForm.components.map((entry, i) => i === index ? { ...entry, condition: e.target.value as 'baik' | 'rusak' } : entry),
-                          })}
-                          className="w-full px-2.5 py-2 border rounded-lg bg-white"
-                        >
-                          <option value="baik">Baik</option>
-                          <option value="rusak">Rusak</option>
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div>
@@ -1361,29 +1738,122 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
                   rows={2}
                   value={kitForm.notes}
                   onChange={(e) => setKitForm({ ...kitForm, notes: e.target.value })}
+                  placeholder="Keterangan kegiatan atau catatan penggunaan paket..."
                   className="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
               <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowEditKitModal(false);
-                    setEditingKit(null);
-                  }}
-                  className="px-4 py-2 font-semibold text-slate-600 hover:text-slate-800"
-                >
+                <button type="button" onClick={closeKitModal} className="px-4 py-2 font-semibold text-slate-600 hover:text-slate-800">
                   Batal
                 </button>
-                <button type="submit" className="px-4 py-2 bg-forest-800 hover:bg-forest-900 text-white font-semibold rounded-xl">
-                  Simpan Paket
+                <button
+                  type="submit"
+                  disabled={savingKit}
+                  className="px-4 py-2 bg-forest-800 hover:bg-forest-900 disabled:opacity-60 text-white font-semibold rounded-xl"
+                >
+                  {savingKit ? 'Menyimpan...' : editingKit ? 'Simpan Paket' : 'Buat Paket'}
                 </button>
               </div>
             </form>
           </div>
         </div>
       )}
+
+      {/* Scanner for adding assets to the kit (rendered after the kit modal so it stacks on top) */}
+      <QRScannerModal
+        isOpen={showKitScanner}
+        onClose={() => setShowKitScanner(false)}
+        onSelectResult={() => {}}
+        mode="asset-selection"
+        onSelectAsset={addKitAssetFromScan}
+        listName="daftar paket"
+      />
+
+      {/* Modal: Confirm delete stock pool */}
+      {poolToDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center flex-shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="font-bold text-slate-900 text-sm">Hapus catatan stok ini?</h3>
+                <p className="text-xs text-slate-600 mt-1">
+                  <span className="font-semibold">{poolToDelete.item_name}</span> di {poolToDelete.location_name}
+                  {poolToDelete.condition === 'rusak' ? ' (kondisi rusak)' : ''} dengan stok{' '}
+                  <strong>{poolToDelete.quantity_total} {poolToDelete.unit_of_measure}</strong> akan dihapus.
+                  Penghapusan tercatat di riwayat pergerakan stok dan log audit. Barang di katalog tidak ikut terhapus.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 text-xs">
+              <button
+                onClick={() => setPoolToDelete(null)}
+                disabled={deletingPool}
+                className="px-4 py-2 font-semibold text-slate-600 hover:text-slate-800 cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handleDeletePool}
+                disabled={deletingPool}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white font-semibold cursor-pointer"
+              >
+                {deletingPool ? 'Menghapus...' : 'Ya, Hapus'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Confirm delete kit */}
+      {kitToDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center flex-shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="font-bold text-slate-900 text-sm">Hapus paket ini?</h3>
+                <p className="text-xs text-slate-600 mt-1">
+                  Paket <span className="font-semibold">{kitToDelete.name}</span> ({kitToDelete.kit_code}) akan dihapus.
+                  Barang dan aset di dalamnya <strong>tidak ikut terhapus</strong>, dan riwayat transaksi tetap tersimpan.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 text-xs">
+              <button
+                onClick={() => setKitToDelete(null)}
+                disabled={deletingKit}
+                className="px-4 py-2 font-semibold text-slate-600 hover:text-slate-800 cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handleDeleteKit}
+                disabled={deletingKit}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white font-semibold cursor-pointer"
+              >
+                {deletingKit ? 'Menghapus...' : 'Ya, Hapus'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <WarehouseModal
+        isOpen={showWarehouseModal}
+        onClose={() => setShowWarehouseModal(false)}
+        onChanged={loadAll}
+      />
+      <ReconcileModal
+        isOpen={showReconcileModal}
+        onClose={() => setShowReconcileModal(false)}
+        onApplied={loadAll}
+      />
 
       {/* Modal: Manage Categories */}
       {showCategoryModal && (
@@ -1511,7 +1981,7 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
       {/* Modal: Add Item Type */}
       {showAddItemModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
-          <div className="relative w-full max-w-md max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 sm:p-6 space-y-4">
+          <div className="relative w-full max-w-lg max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 sm:p-6 space-y-4">
             <div className="flex items-center justify-between border-b pb-3">
               <h3 className="font-bold text-slate-900 text-sm">{editingItemId ? 'Edit Katalog Barang' : 'Tambah Jenis Barang Baru'}</h3>
               <button
@@ -1621,6 +2091,102 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, 
                   className="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
+              {/* Kelengkapan (optional, descriptive only) */}
+              <div className="rounded-xl border border-slate-200 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowAccessoryEditor((open) => !open)}
+                  className="w-full flex items-center justify-between gap-2 px-3 py-2.5 bg-slate-50 hover:bg-slate-100 text-left cursor-pointer"
+                  aria-expanded={showAccessoryEditor}
+                >
+                  <span>
+                    <span className="font-semibold text-slate-700">Kelengkapan</span>
+                    <span className="text-slate-400"> (opsional)</span>
+                    {newItem.accessories.length > 0 && (
+                      <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                        {newItem.accessories.length}
+                      </span>
+                    )}
+                  </span>
+                  <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showAccessoryEditor ? 'rotate-180' : ''}`} />
+                </button>
+                {showAccessoryEditor && (
+                  <div className="p-3 space-y-2.5">
+                    <p className="text-[10px] text-slate-500">
+                      Catat perlengkapan bawaan barang ini, misalnya charger atau baterai. Kelengkapan hanya menjadi keterangan —
+                      <strong> tidak dibuat sebagai katalog atau aset</strong>. Jika perlu dipinjam terpisah, daftarkan sebagai barang sendiri.
+                    </p>
+                    {newItem.accessories.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {newItem.accessories.map((accessory) => (
+                          <span
+                            key={accessory.name}
+                            className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-forest-800 font-medium"
+                          >
+                            {accessory.name}{accessory.quantity > 1 ? ` ×${accessory.quantity}` : ''}
+                            <button
+                              type="button"
+                              onClick={() => removeAccessory(accessory.name)}
+                              className="p-0.5 rounded-full hover:bg-emerald-100 cursor-pointer"
+                              aria-label={`Hapus kelengkapan ${accessory.name}`}
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={accessoryDraft.name}
+                        onChange={(e) => setAccessoryDraft({ ...accessoryDraft, name: e.target.value })}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            addAccessory(accessoryDraft.name, accessoryDraft.quantity);
+                          }
+                        }}
+                        maxLength={80}
+                        placeholder="Contoh: Charger kamera"
+                        className="flex-1 min-w-0 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-emerald-500"
+                      />
+                      <input
+                        type="number"
+                        min="1"
+                        max="99"
+                        value={accessoryDraft.quantity}
+                        onChange={(e) => setAccessoryDraft({ ...accessoryDraft, quantity: Math.max(1, Number(e.target.value) || 1) })}
+                        className="w-16 px-2 py-2 border rounded-lg font-mono text-center"
+                        aria-label="Jumlah"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => addAccessory(accessoryDraft.name, accessoryDraft.quantity)}
+                        disabled={!accessoryDraft.name.trim()}
+                        className="px-3 py-2 rounded-lg bg-forest-800 hover:bg-forest-900 disabled:opacity-40 text-white font-semibold cursor-pointer"
+                      >
+                        Tambah
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {ACCESSORY_SUGGESTIONS.filter(
+                        (suggestion) => !newItem.accessories.some((a) => a.name.toLowerCase() === suggestion.toLowerCase())
+                      ).map((suggestion) => (
+                        <button
+                          key={suggestion}
+                          type="button"
+                          onClick={() => addAccessory(suggestion)}
+                          className="px-2 py-1 rounded-full border border-dashed border-slate-300 text-[11px] text-slate-600 hover:border-emerald-400 hover:text-forest-800 hover:bg-emerald-50 cursor-pointer"
+                        >
+                          + {suggestion}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"

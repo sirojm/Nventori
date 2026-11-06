@@ -342,7 +342,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
+            <table className="rt w-full text-xs text-left">
               <thead>
                 <tr className="border-b border-slate-100 text-slate-400 font-semibold">
                   <th className="pb-2">Kode / Jenis</th>
