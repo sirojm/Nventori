@@ -43,6 +43,53 @@
 
 /* Print styling */
 @media print {
+  body.label-printing > :not(.label-print-root) {
+    display: none !important;
+  }
+  body.label-printing .label-print-root {
+    position: static !important;
+    display: block !important;
+    width: auto !important;
+    max-width: none !important;
+    height: auto !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: #FFFFFF !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    animation: none !important;
+  }
+  body.label-printing .label-print-dialog {
+    position: static !important;
+    display: block !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+  body.label-printing .label-print-wrapper {
+    position: static !important;
+    display: block !important;
+    width: auto !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: #FFFFFF !important;
+  }
+  body.label-printing .label-print-root .no-print {
+    display: none !important;
+  }
+  body.label-printing .label-item {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
   body.receipt-printing * {
     visibility: hidden !important;
   }
