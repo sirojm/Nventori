@@ -11,6 +11,13 @@ export interface LabelOptions {
   showLocation: boolean;
   showSerialNumber: boolean;
   showCondition: boolean;
+  marginTop: number; // mm
+  marginRight: number;
+  marginBottom: number;
+  marginLeft: number;
+  offsetX: number; // mm, shifts the whole content (printer calibration)
+  offsetY: number;
+  textScale: number; // 0.7 - 1.4
 }
 
 export const getQrSizeMm = (w: number, h: number, scale: QrScale): number => {
@@ -28,10 +35,12 @@ export const getQrSizeMm = (w: number, h: number, scale: QrScale): number => {
 };
 
 const getTypography = (w: number, h: number) => {
-  if (w <= 35 || h <= 22) return { header: 5, code: 6.5, name: 5.2, sub: 4.5, pad: 1.2, gap: 1.2 };
-  if (w <= 45 && h <= 35) return { header: 6, code: 8, name: 6.5, sub: 5.2, pad: 1.8, gap: 1.8 };
-  return { header: 7, code: 9.5, name: 7.5, sub: 6, pad: 2.5, gap: 2.5 };
+  if (w <= 35 || h <= 22) return { header: 5, code: 6.5, name: 5.2, sub: 4.5, gap: 1.2 };
+  if (w <= 45 && h <= 35) return { header: 6, code: 8, name: 6.5, sub: 5.2, gap: 1.8 };
+  return { header: 7, code: 9.5, name: 7.5, sub: 6, gap: 2.5 };
 };
+
+export const defaultMargin = (w: number, h: number) => (w <= 35 || h <= 22 ? 1.5 : w <= 45 ? 2 : 2.5);
 
 /** Draw text shrinking the font until it fits maxW; ellipsis as last resort. */
 const fitText = (
@@ -80,43 +89,51 @@ export const renderLabelCanvas = async (
   ctx.fillStyle = '#000';
   ctx.textBaseline = 'top';
 
+  ctx.translate(Math.round(opt.offsetX * mm), Math.round(opt.offsetY * mm));
+
   const t = getTypography(opt.widthMm, opt.heightMm);
-  const pt = dpi / 72;
-  const pad = t.pad * mm;
+  const pt = (dpi / 72) * (opt.textScale || 1);
   const gap = t.gap * mm;
+  const mL = opt.marginLeft * mm;
+  const mR = opt.marginRight * mm;
+  const mT = opt.marginTop * mm;
+  const mB = opt.marginBottom * mm;
+  const left = mL;
+  const right = W - mR;
+  const contentW = right - left;
   const SANS = 'Arial, Helvetica, sans-serif';
   const MONO = '"Courier New", Consolas, monospace';
 
   const showTopHeader = opt.showHeader && opt.heightMm >= 24;
   const showFooter = opt.heightMm >= 28;
-  let top = pad;
-  let bottom = H - pad;
+  let top = mT;
+  let bottom = H - mB;
 
   if (showTopHeader) {
     const hs = t.header * pt;
     ctx.font = `800 ${hs}px ${SANS}`;
-    ctx.fillText('NVENTORI ASSET', pad, top);
+    ctx.fillText('NVENTORI ASSET', left, top);
     const cat = (asset.category_name || 'INVENTARIS').toUpperCase();
     ctx.font = `600 ${t.sub * pt}px ${SANS}`;
-    const cw = Math.min(ctx.measureText(cat).width, W * 0.4);
-    fitText(ctx, cat, W - pad - cw, top, cw, t.sub * pt, '600', SANS);
+    const cw = Math.min(ctx.measureText(cat).width, contentW * 0.4);
+    fitText(ctx, cat, right - cw, top, cw, t.sub * pt, '600', SANS);
     top += hs * 1.25;
-    ctx.fillRect(pad, top, W - pad * 2, Math.max(1, dpi / 200));
+    ctx.fillRect(left, top, contentW, Math.max(1, dpi / 200));
     top += 0.8 * mm;
   }
 
   if (showFooter) {
     const fs = t.sub * pt;
     bottom -= fs * 1.2;
-    ctx.fillRect(pad, bottom - 0.6 * mm, W - pad * 2, Math.max(1, dpi / 200));
+    ctx.fillRect(left, bottom - 0.6 * mm, contentW, Math.max(1, dpi / 200));
     ctx.font = `500 ${fs}px ${MONO}`;
     const loc = asset.location_name || 'Gudang Pusat';
-    const condW = opt.showCondition ? W * 0.3 : 0;
-    fitText(ctx, loc, pad, bottom, W - pad * 2 - condW - gap, fs, '500', MONO);
+    const condW = opt.showCondition ? contentW * 0.3 : 0;
+    fitText(ctx, loc, left, bottom, contentW - condW - gap, fs, '500', MONO);
     if (opt.showCondition) {
       const c = String(asset.condition || '').toUpperCase();
       ctx.font = `700 ${fs}px ${MONO}`;
-      ctx.fillText(c, W - pad - ctx.measureText(c).width, bottom);
+      ctx.fillText(c, right - ctx.measureText(c).width, bottom);
     }
     bottom -= 0.6 * mm;
   }
@@ -136,11 +153,11 @@ export const renderLabelCanvas = async (
     color: { dark: '#000000', light: '#FFFFFF' },
   });
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(qrCanvas, pad, Math.round(qrY), qrPx, qrPx);
+  ctx.drawImage(qrCanvas, left, Math.round(qrY), qrPx, qrPx);
 
   // Text column
-  const tx = pad + qrPx + gap;
-  const tw = W - pad - tx;
+  const tx = left + qrPx + gap;
+  const tw = right - tx;
   const lines: { text: string; size: number; weight: string; family: string }[] = [];
   if (opt.showHeader && !showTopHeader) {
     lines.push({ text: 'NVENTORI', size: t.header * pt, weight: '800', family: SANS });

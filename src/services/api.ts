@@ -178,6 +178,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  updateContact: (id: number | string, data: any) =>
+    request<{ success: boolean; message: string }>(`/contacts/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteContact: (id: number | string) =>
+    request<{ success: boolean; message: string }>(`/contacts/${id}`, { method: 'DELETE' }),
 
   // Transactions
   getTransactions: (params: any = {}) => {

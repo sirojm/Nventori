@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Users, Plus, Search, Phone, Mail, Building2, History, X, AlertCircle } from 'lucide-react';
+import { Users, Plus, Search, Phone, Mail, Building2, History, X, AlertCircle, Pencil, Trash2, Loader2 } from 'lucide-react';
 import { api } from '../services/api';
 import { BorrowerContact } from '../types';
 import { useToast } from '../context/ToastContext';
@@ -11,6 +11,10 @@ export const ContactsPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedContact, setSelectedContact] = useState<any>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<any>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const [formData, setFormData] = useState({
     full_name: '',
@@ -46,18 +50,64 @@ export const ContactsPage: React.FC = () => {
     }
 
     try {
+      if (editingId !== null) {
+        const res = await api.updateContact(editingId, formData);
+        if (res.success) {
+          success(res.message);
+          closeForm();
+          setSelectedContact(null);
+          loadContacts();
+        }
+        return;
+      }
       const res = await api.createContact(formData);
       if (res.success) {
         success(res.message);
         if (res.potential_duplicate) {
           alert(res.potential_duplicate);
         }
-        setShowAddModal(false);
-        setFormData({ full_name: '', institution: '', phone_wa: '', email: '', notes: '' });
+        closeForm();
         loadContacts();
       }
     } catch (err: any) {
       error(err.message || 'Gagal menyimpan kontak.');
+    }
+  };
+
+  const closeForm = () => {
+    setShowAddModal(false);
+    setEditingId(null);
+    setFormData({ full_name: '', institution: '', phone_wa: '', email: '', notes: '' });
+  };
+
+  const openEdit = (contact: any) => {
+    setEditingId(contact.id);
+    setFormData({
+      full_name: contact.full_name || '',
+      institution: contact.institution || '',
+      phone_wa: contact.phone_wa || '',
+      email: contact.email || '',
+      notes: contact.notes || '',
+    });
+    setShowAddModal(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      const res = await api.deleteContact(deleteTarget.id);
+      if (res.success) {
+        success(res.message);
+        setDeleteTarget(null);
+        setSelectedContact(null);
+        loadContacts();
+      }
+    } catch (err: any) {
+      setDeleteError(err.message || 'Gagal menghapus kontak.');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -141,8 +191,39 @@ export const ContactsPage: React.FC = () => {
                 <span className="truncate">{contact.email}</span>
               </div>
             </div>
+
+            <div className="flex items-center justify-end gap-1.5 pt-1">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openEdit(contact);
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-800 transition cursor-pointer"
+                aria-label={`Edit ${contact.full_name}`}
+              >
+                <Pencil className="w-3.5 h-3.5" /> Edit
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDeleteError('');
+                  setDeleteTarget(contact);
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-200 text-[11px] font-semibold text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                aria-label={`Hapus ${contact.full_name}`}
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Hapus
+              </button>
+            </div>
           </div>
         ))}
+        {!loading && contacts.length === 0 && (
+          <div className="col-span-full p-8 text-center text-xs text-slate-500 rounded-2xl border border-dashed border-slate-200">
+            {search ? 'Tidak ada kontak yang cocok dengan pencarian.' : 'Belum ada kontak peminjam.'}
+          </div>
+        )}
       </div>
 
       {/* Add Contact Modal */}
@@ -150,8 +231,8 @@ export const ContactsPage: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
           <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-4">
             <div className="flex items-center justify-between border-b pb-3">
-              <h3 className="font-bold text-slate-900 text-sm">Tambah Kontak Peminjam Baru</h3>
-              <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600">
+              <h3 className="font-bold text-slate-900 text-sm">{editingId !== null ? 'Edit Kontak Peminjam' : 'Tambah Kontak Peminjam Baru'}</h3>
+              <button onClick={closeForm} className="text-slate-400 hover:text-slate-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -218,7 +299,7 @@ export const ContactsPage: React.FC = () => {
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowAddModal(false)}
+                  onClick={closeForm}
                   className="px-4 py-2 font-semibold text-slate-600 hover:text-slate-800"
                 >
                   Batal
@@ -227,7 +308,7 @@ export const ContactsPage: React.FC = () => {
                   type="submit"
                   className="px-4 py-2 bg-forest-800 hover:bg-forest-900 text-white font-semibold rounded-xl"
                 >
-                  Simpan Kontak
+                  {editingId !== null ? 'Simpan Perubahan' : 'Simpan Kontak'}
                 </button>
               </div>
             </form>
@@ -244,9 +325,28 @@ export const ContactsPage: React.FC = () => {
                 <h3 className="font-bold text-slate-900 text-base">{selectedContact.full_name}</h3>
                 <p className="text-xs text-slate-500">{selectedContact.institution}</p>
               </div>
-              <button onClick={() => setSelectedContact(null)} className="text-slate-400 hover:text-slate-600">
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => openEdit(selectedContact)}
+                  className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 cursor-pointer"
+                  aria-label="Edit kontak"
+                >
+                  <Pencil className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => {
+                    setDeleteError('');
+                    setDeleteTarget(selectedContact);
+                  }}
+                  className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 cursor-pointer"
+                  aria-label="Hapus kontak"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+                <button onClick={() => setSelectedContact(null)} className="p-1.5 text-slate-400 hover:text-slate-600 cursor-pointer">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             <div className="p-3 bg-slate-50 rounded-xl text-xs font-mono space-y-1">
@@ -275,6 +375,49 @@ export const ContactsPage: React.FC = () => {
                   <div className="p-4 text-center text-slate-400 text-xs">Belum ada riwayat transaksi.</div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl border border-slate-100 p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center flex-shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="font-bold text-slate-900 text-sm">Hapus kontak ini?</h3>
+                <p className="text-xs text-slate-600 mt-1">
+                  <span className="font-semibold">{deleteTarget.full_name}</span> ({deleteTarget.institution}) akan
+                  dihapus dari buku kontak. Riwayat transaksi yang pernah dibuat <strong>tidak ikut terhapus</strong>.
+                </p>
+              </div>
+            </div>
+            {deleteError && (
+              <div role="alert" className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 flex items-start gap-2 text-xs text-rose-800">
+                <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
+                <span>{deleteError}</span>
+              </div>
+            )}
+            <div className="flex justify-end gap-2 text-xs">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
+                className="px-4 py-2 font-semibold text-slate-600 hover:text-slate-800 cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white font-semibold cursor-pointer"
+              >
+                {deleting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Ya, Hapus
+              </button>
             </div>
           </div>
         </div>

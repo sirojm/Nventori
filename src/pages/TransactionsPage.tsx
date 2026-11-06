@@ -13,6 +13,7 @@ import {
   Calendar,
   AlertTriangle,
   FileText,
+  ExternalLink,
   X
 } from 'lucide-react';
 import { api } from '../services/api';
@@ -318,7 +319,21 @@ export const TransactionsPage: React.FC<TransactionsPageProps> = ({
                   <div className="font-mono font-bold text-blue-950">Nomor: {selectedTx.letter_number || '-'}</div>
                   <div className="text-blue-900">Tanggal Surat: {selectedTx.letter_date || '-'}</div>
                   <div className="text-blue-900">Pengirim: {selectedTx.sender_unit || '-'}</div>
-                  {selectedTx.letter_notes && <div className="text-[11px] text-blue-700 mt-1 italic">Catatan: {selectedTx.letter_notes}</div>}
+                  {selectedTx.letter_notes && (
+                    /^https?:\/\//i.test(selectedTx.letter_notes) ? (
+                      <a
+                        href={selectedTx.letter_notes}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 mt-1 px-2.5 py-1.5 rounded-lg bg-white border border-blue-200 text-[11px] font-semibold text-blue-700 hover:bg-blue-50 transition break-all"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 flex-shrink-0" />
+                        Buka dokumen / arsip
+                      </a>
+                    ) : (
+                      <div className="text-[11px] text-blue-700 mt-1 italic">Catatan: {selectedTx.letter_notes}</div>
+                    )
+                  )}
                 </div>
               )}
 

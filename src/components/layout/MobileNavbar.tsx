@@ -14,21 +14,25 @@ const TOP = 30; // y of the bar's top edge (space above for the floating bubble)
 const BAR_H = 62; // bar height
 const TOTAL_H = TOP + BAR_H;
 const CORNER = 22; // bar corner radius
-const NOTCH_HW = 48; // half-width of the notch at the top edge
-const NOTCH_D = 28; // notch depth
+const NOTCH_HW = 44; // half-width of the notch at the top edge
+const NOTCH_D = 24; // notch depth
 const BUBBLE = 46; // bubble diameter
 const BUBBLE_TOP = 3; // bubble top offset
-const PAD_X = 12; // horizontal padding of the tab row
+const MIN_PAD_X = 12; // minimum horizontal padding of the tab row
+
+// Notch must always fit fully inside the straight top edge, so even the first/last tab
+// gets the exact same symmetric notch. Widen the tab-row padding just enough for that.
+const padFor = (w: number) => Math.max(MIN_PAD_X, (CORNER + NOTCH_HW - w / 10) / 0.8);
 
 const buildPath = (w: number, cx: number) => {
   const r = CORNER;
   const T = TOP;
   const B = TOTAL_H;
-  const x = Math.min(Math.max(cx, r), w - r);
-  const l = Math.max(x - NOTCH_HW, r);
-  const rr = Math.min(x + NOTCH_HW, w - r);
-  const leftWidth = x - l;
-  const rightWidth = rr - x;
+  const x = Math.min(Math.max(cx, r + NOTCH_HW), w - r - NOTCH_HW);
+  const l = x - NOTCH_HW;
+  const rr = x + NOTCH_HW;
+  const leftWidth = NOTCH_HW;
+  const rightWidth = NOTCH_HW;
   const d = NOTCH_D;
   return [
     `M 0,${T + r}`,
@@ -75,11 +79,16 @@ export const MobileNavbar: React.FC<MobileNavbarProps> = ({
   const spring = useRef({ pos: 0, vel: 0, init: false });
 
   const targetFor = useCallback(
-    (w: number, idx: number) => PAD_X + ((w - PAD_X * 2) * (idx + 0.5)) / tabs.length,
+    (w: number, idx: number) => {
+      const pad = padFor(w);
+      return pad + ((w - pad * 2) * (idx + 0.5)) / tabs.length;
+    },
     [tabs.length]
   );
 
   const draw = useCallback((w: number, cx: number) => {
+    const min = CORNER + NOTCH_HW;
+    cx = Math.min(Math.max(cx, min), w - min);
     const d = buildPath(w, cx);
     clipPathRef.current?.setAttribute('d', d);
     shadowPathRef.current?.setAttribute('d', d);
@@ -152,7 +161,11 @@ export const MobileNavbar: React.FC<MobileNavbarProps> = ({
     <nav
       aria-label="Navigasi Bawah Mobile"
       className="md:hidden fixed bottom-0 left-0 right-0 z-40 px-4 pointer-events-none"
-      style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 10px)' }}
+      style={{
+        paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 10px)',
+        transform: 'translate3d(0,0,0)',
+        willChange: 'transform',
+      }}
     >
       <style>{`
         @keyframes nv-pop {
@@ -195,7 +208,7 @@ export const MobileNavbar: React.FC<MobileNavbarProps> = ({
           style={{
             clipPath: 'url(#nv-clip)',
             background:
-              'linear-gradient(180deg, rgba(255,255,255,0.62) 0%, rgba(255,255,255,0.48) 100%)',
+              'var(--nv-glass-bg)',
             WebkitBackdropFilter: 'blur(28px) saturate(180%)',
             backdropFilter: 'blur(28px) saturate(180%)',
           }}
@@ -212,7 +225,7 @@ export const MobileNavbar: React.FC<MobileNavbarProps> = ({
             ref={strokePathRef}
             d={initialPath}
             fill="none"
-            stroke="rgba(255,255,255,0.75)"
+            stroke="var(--nv-glass-stroke)"
             strokeWidth="1"
           />
         </svg>
@@ -229,7 +242,7 @@ export const MobileNavbar: React.FC<MobileNavbarProps> = ({
             transform: `translate3d(${targetFor(w, activeIndex) - BUBBLE / 2}px,0,0)`,
             willChange: 'transform',
             background: 'linear-gradient(160deg, #2d6a4f 0%, #1b4332 100%)',
-            border: '2px solid rgba(255,255,255,0.9)',
+            border: '2px solid var(--nv-bubble-border)',
             boxShadow:
               '0 8px 18px rgba(27,67,50,0.38), inset 0 1px 0 rgba(255,255,255,0.28)',
           }}
@@ -246,7 +259,7 @@ export const MobileNavbar: React.FC<MobileNavbarProps> = ({
         {/* Tabs */}
         <div
           className="absolute left-0 right-0 grid grid-cols-5"
-          style={{ top: TOP, height: BAR_H, paddingInline: PAD_X }}
+          style={{ top: TOP, height: BAR_H, paddingInline: padFor(w) }}
         >
           {tabs.map((tab) => {
             const Icon = tab.icon;
@@ -270,7 +283,7 @@ export const MobileNavbar: React.FC<MobileNavbarProps> = ({
                   className="w-[22px] h-[22px]"
                   strokeWidth={1.8}
                   style={{
-                    color: '#475569',
+                    color: 'var(--nv-tab-idle)',
                     opacity: isActive ? 0 : 1,
                     transform: isActive ? 'translateY(-10px) scale(0.5)' : 'translateY(0) scale(1)',
                     transition:
@@ -280,7 +293,7 @@ export const MobileNavbar: React.FC<MobileNavbarProps> = ({
                 <span
                   className="text-[10px] leading-none"
                   style={{
-                    color: isActive ? '#1b4332' : '#475569',
+                    color: isActive ? 'var(--nv-tab-active)' : 'var(--nv-tab-idle)',
                     fontWeight: isActive ? 700 : 500,
                     transition: 'color 300ms ease',
                   }}

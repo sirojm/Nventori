@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Html5Qrcode } from 'html5-qrcode';
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { X, Camera, Search, ArrowRight, AlertCircle, CheckCircle2, Package, ArrowLeftRight } from 'lucide-react';
 import { api } from '../../services/api';
 import { AssetUnit } from '../../types';
@@ -9,7 +9,7 @@ interface QRScannerModalProps {
   onClose: () => void;
   onSelectResult: (result: { type: 'transaction' | 'asset' | 'kit'; data: any }) => void;
   mode?: 'resolve' | 'asset-selection';
-  onSelectAsset?: (asset: AssetUnit) => boolean;
+  onSelectAsset?: (asset: AssetUnit) => 'added' | 'duplicate' | 'unavailable';
 }
 
 export const QRScannerModal: React.FC<QRScannerModalProps> = ({
@@ -29,6 +29,9 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   const [lastScannedAsset, setLastScannedAsset] = useState<AssetUnit | null>(null);
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const lookupInProgressRef = useRef(false);
+  // The camera callback outlives the render that created it; always call the latest handler.
+  const onSelectAssetRef = useRef(onSelectAsset);
+  onSelectAssetRef.current = onSelectAsset;
 
   useEffect(() => {
     if (!isOpen) {
@@ -52,14 +55,28 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
     setCameraStarting(true);
     try {
       if (scannerRef.current) await stopScanner();
-      const html5QrCode = new Html5Qrcode('qr-reader');
+      const html5QrCode = new Html5Qrcode('qr-reader', {
+        verbose: false,
+        formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+        // Native detector (same engine as the phone's camera app) when available: far more reliable
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      });
       scannerRef.current = html5QrCode;
 
+      // No qrbox => the whole camera frame is analysed, not just a small square.
+      // High resolution + continuous autofocus are what make small/far QR codes decode.
       await html5QrCode.start(
+        // html5-qrcode requires this first argument to have exactly ONE key
         { facingMode: 'environment' },
         {
-          fps: 10,
-          qrbox: { width: 220, height: 220 },
+          fps: 15,
+          disableFlip: false,
+          videoConstraints: {
+            facingMode: 'environment',
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            advanced: [{ focusMode: 'continuous' } as any],
+          },
         },
         async (decodedText) => {
           if (lookupInProgressRef.current) return;
@@ -130,9 +147,17 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
             return;
           }
           const asset = res.data as AssetUnit;
-          if (asset.status !== 'tersedia' || !onSelectAsset?.(asset)) {
+          const outcome = onSelectAssetRef.current?.(asset) ?? 'unavailable';
+          if (outcome === 'duplicate') {
             setScanResult(null);
-            setErrorMsg(`${asset.asset_code} sudah dipilih atau tidak tersedia untuk dipinjam.`);
+            setErrorMsg(`${asset.asset_code} (${asset.item_name}) sudah ada di daftar transaksi.`);
+            if (resumeScanning) await startScanner();
+            return;
+          }
+          if (outcome === 'unavailable' || asset.status !== 'tersedia') {
+            setScanResult(null);
+            setErrorMsg(`${asset.asset_code} tidak tersedia untuk dipinjam.`);
+            if (resumeScanning) await startScanner();
             return;
           }
           setSelectedCount((count) => count + 1);
@@ -155,8 +180,8 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-150">
-      <div className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-150">
+      <div className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[96dvh] sm:max-h-[90vh]">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50/50">
           <div className="flex items-center gap-2">
@@ -182,8 +207,18 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
         <div className="p-5 overflow-y-auto space-y-4">
           {/* Camera Frame */}
           <div className="flex flex-col items-center">
+            <style>{`
+              #qr-reader { border: none !important; padding: 0 !important; }
+              #qr-reader video {
+                width: 100% !important;
+                height: 100% !important;
+                object-fit: cover;
+                display: block;
+              }
+              #qr-reader canvas, #qr-reader #qr-shaded-region { display: none !important; }
+            `}</style>
             <div
-              className="relative w-full max-w-[280px] h-[220px] rounded-xl bg-slate-900 overflow-hidden border-2 border-slate-200"
+              className="relative w-full aspect-[3/4] sm:aspect-[4/3] max-h-[60vh] rounded-2xl bg-slate-900 overflow-hidden"
             >
               {/* html5-qrcode owns this element's children; keep React content outside it. */}
               <div id="qr-reader" className="h-full w-full" />

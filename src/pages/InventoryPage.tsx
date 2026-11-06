@@ -28,6 +28,7 @@ import { useToast } from '../context/ToastContext';
 
 interface InventoryPageProps {
   onOpenLabelModal: (asset: AssetUnit) => void;
+  focusRequest?: { tab: 'assets' | 'kits'; search: string; nonce: number } | null;
 }
 
 interface KitComponentForm {
@@ -93,7 +94,7 @@ const parseCsv = (source: string): string[][] => {
   return records;
 };
 
-export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }) => {
+export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal, focusRequest }) => {
   const { user } = useAuth();
   const { success, error } = useToast();
 
@@ -104,6 +105,13 @@ export const InventoryPage: React.FC<InventoryPageProps> = ({ onOpenLabelModal }
   const [showInactiveItems, setShowInactiveItems] = useState(false);
   const [inactiveItems, setInactiveItems] = useState<ItemType[]>([]);
   const [showInactiveAssets, setShowInactiveAssets] = useState(false);
+
+  // Jump to a specific tab/search (e.g. after scanning a QR)
+  useEffect(() => {
+    if (!focusRequest) return;
+    setActiveTab(focusRequest.tab);
+    setSearch(focusRequest.search);
+  }, [focusRequest?.nonce]);
 
   // Data
   const [items, setItems] = useState<ItemType[]>([]);

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Bell, KeyRound, QrCode } from 'lucide-react';
+import { Bell, KeyRound, Sun, Moon } from 'lucide-react';
+import { useTheme } from '../../context/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 
@@ -17,6 +18,7 @@ export const Topbar: React.FC<TopbarProps> = ({
   title = 'Beranda',
 }) => {
   const { user } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const [notificationCount, setNotificationCount] = useState<number>(0);
 
   useEffect(() => {
@@ -56,13 +58,32 @@ export const Topbar: React.FC<TopbarProps> = ({
           <span className="hidden text-xs font-medium sm:inline">Ganti Password</span>
         </button>
 
-        {/* Mobile Scanner Button */}
+        {/* Light / Dark mode toggle */}
         <button
-          onClick={onOpenScanner}
-          className="md:hidden flex items-center justify-center w-9 h-9 rounded-xl bg-forest-800 text-white shadow-sm active:scale-95 transition-transform cursor-pointer"
-          aria-label="Buka Pemindai QR"
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            toggleTheme({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+          }}
+          className="relative flex items-center justify-center w-9 h-9 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 transition-colors cursor-pointer overflow-hidden active:scale-95"
+          aria-label={theme === 'dark' ? 'Ganti ke mode terang' : 'Ganti ke mode malam'}
+          title={theme === 'dark' ? 'Mode terang' : 'Mode malam'}
         >
-          <QrCode className="w-4 h-4" />
+          <Sun
+            className="absolute w-4 h-4"
+            style={{
+              transition: 'transform 500ms cubic-bezier(0.32,0.72,0,1), opacity 300ms ease',
+              transform: theme === 'dark' ? 'rotate(0deg) scale(1)' : 'rotate(-90deg) scale(0.3)',
+              opacity: theme === 'dark' ? 1 : 0,
+            }}
+          />
+          <Moon
+            className="absolute w-4 h-4"
+            style={{
+              transition: 'transform 500ms cubic-bezier(0.32,0.72,0,1), opacity 300ms ease',
+              transform: theme === 'dark' ? 'rotate(90deg) scale(0.3)' : 'rotate(0deg) scale(1)',
+              opacity: theme === 'dark' ? 0 : 1,
+            }}
+          />
         </button>
 
         {/* Notifications Alert Bell */}

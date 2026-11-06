@@ -7,16 +7,36 @@ const router = express.Router();
 
 // GET /api/qr/resolve/:code
 router.get('/resolve/:code', authenticate, (req, res) => {
-  const code = req.params.code.trim();
+  let code = req.params.code.trim();
+
+  // 0. Receipt proof QR (handover/return documents) encodes a verification URL such as
+  //    https://host/api/transactions/verify-receipt/<token>. Resolve it to its transaction.
+  let receiptTransactionId = null;
+  const receiptMatch = code.match(/verify-receipt\/([A-Za-z0-9_-]{22})(?:[/?#]|$)/);
+  if (receiptMatch) {
+    const receipt = query.get(
+      'SELECT transaction_id FROM receipt_verification_tokens WHERE token = ?',
+      [receiptMatch[1]]
+    );
+    if (receipt) receiptTransactionId = receipt.transaction_id;
+  }
 
   // 1. Check if Transaction QR
-  const tx = query.get(`
-    SELECT t.*, u.name as operator_name
-    FROM transactions t
-    JOIN users u ON t.operator_id = u.id
-    WHERE t.qr_token = ? OR t.transaction_code = ?`,
-    [code, code]
-  );
+  const tx = receiptTransactionId
+    ? query.get(`
+        SELECT t.*, u.name as operator_name
+        FROM transactions t
+        JOIN users u ON t.operator_id = u.id
+        WHERE t.id = ?`,
+        [receiptTransactionId]
+      )
+    : query.get(`
+        SELECT t.*, u.name as operator_name
+        FROM transactions t
+        JOIN users u ON t.operator_id = u.id
+        WHERE t.qr_token = ? OR t.transaction_code = ?`,
+        [code, code]
+      );
 
   if (tx) {
     const lines = query.all(`

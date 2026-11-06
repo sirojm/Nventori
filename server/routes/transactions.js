@@ -301,6 +301,19 @@ router.post('/', authenticate, (req, res) => {
     return res.status(400).json({ success: false, message: 'Pinjaman antarunit wajib menyertakan referensi nomor surat permohonan.' });
   }
 
+  // Document/archive link must be a plain http(s) URL (blocks javascript:, data:, etc.)
+  let safeLetterLink = null;
+  if (transaction_type === 'inter_unit_loan' && typeof letter_notes === 'string' && letter_notes.trim()) {
+    try {
+      const raw = letter_notes.trim();
+      const url = new URL(/^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`);
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('protocol');
+      safeLetterLink = url.toString();
+    } catch {
+      return res.status(400).json({ success: false, message: 'Tautan dokumen/arsip tidak valid. Gunakan alamat http:// atau https://.' });
+    }
+  }
+
   const borrowerSnapshot = transaction_type === 'internal_usage'
     ? { name: 'Pemakaian Internal', unit: 'Internal', phone: '', email: '' }
     : {
@@ -361,7 +374,7 @@ router.post('/', authenticate, (req, res) => {
       query.run(`
         INSERT INTO request_letters (transaction_id, letter_number, letter_date, sender_unit, notes)
         VALUES (?, ?, ?, ?, ?)`,
-        [txId, letter_number.trim(), letter_date || new Date().toISOString().slice(0, 10), sender_unit || borrower_unit.trim(), letter_notes || null]
+        [txId, letter_number.trim(), letter_date || new Date().toISOString().slice(0, 10), sender_unit || borrower_unit.trim(), safeLetterLink]
       );
     }
 

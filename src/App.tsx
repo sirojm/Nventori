@@ -38,6 +38,7 @@ const AppContent: React.FC = () => {
   const [isReturnModalOpen, setIsReturnModalOpen] = useState(false);
   const [selectedTxForReturn, setSelectedTxForReturn] = useState<Transaction | null>(null);
 
+  const [inventoryFocus, setInventoryFocus] = useState<{ tab: 'assets' | 'kits'; search: string; nonce: number } | null>(null);
   const [isLabelModalOpen, setIsLabelModalOpen] = useState(false);
   const [selectedAssetForLabel, setSelectedAssetForLabel] = useState<AssetUnit | null>(null);
 
@@ -97,10 +98,12 @@ const AppContent: React.FC = () => {
       setSelectedTxForReturn(result.data);
       setIsReturnModalOpen(true);
     } else if (result.type === 'asset') {
-      setSelectedAssetForLabel(result.data);
-      setIsLabelModalOpen(true);
+      // Show the scanned asset in Inventaris (not the QR print dialog)
+      setInventoryFocus({ tab: 'assets', search: result.data.asset_code, nonce: Date.now() });
+      handleDesktopNavigate('inventory');
     } else if (result.type === 'kit') {
-      setCurrentPage('inventory');
+      setInventoryFocus({ tab: 'kits', search: '', nonce: Date.now() });
+      handleDesktopNavigate('inventory');
     }
   };
 
@@ -155,6 +158,7 @@ const AppContent: React.FC = () => {
 
           {currentPage === 'inventory' && (
             <InventoryPage
+              focusRequest={inventoryFocus}
               onOpenLabelModal={(asset) => {
                 setSelectedAssetForLabel(asset);
                 setIsLabelModalOpen(true);

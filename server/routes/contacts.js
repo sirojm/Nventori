@@ -60,7 +60,7 @@ router.post('/', authenticate, (req, res) => {
 
   // Check possible duplicates for operator assistance
   const duplicateCandidate = query.get(
-    'SELECT id, full_name, institution FROM borrower_contacts WHERE email = ? OR phone_wa = ?',
+    'SELECT id, full_name, institution FROM borrower_contacts WHERE is_active = 1 AND (email = ? OR phone_wa = ?)',
     [email.trim().toLowerCase(), phone_wa.trim()]
   );
 
@@ -89,6 +89,13 @@ router.put('/:id', authenticate, (req, res) => {
     return res.status(400).json({ success: false, message: 'Semua field wajib diisi.' });
   }
 
+  const existing = query.get('SELECT id FROM borrower_contacts WHERE id = ? AND is_active = 1', [id]);
+  if (!existing) {
+    return res.status(404).json({ success: false, message: 'Kontak peminjam tidak ditemukan.' });
+  }
+
+  // Only the contact record changes. Past transactions keep their own snapshot of the
+  // borrower's name/unit/phone/email, so history stays exactly as it was issued.
   query.run(`
     UPDATE borrower_contacts
     SET full_name = ?, institution = ?, phone_wa = ?, email = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
@@ -99,6 +106,37 @@ router.put('/:id', authenticate, (req, res) => {
   logAudit(req.user.id, req.user.name, req.user.role, 'UPDATE_CONTACT', 'BORROWER_CONTACT', id, { full_name, email });
 
   res.json({ success: true, message: 'Kontak peminjam berhasil diperbarui.' });
+});
+
+// DELETE /api/contacts/:id  (soft delete: hides the contact, keeps all transaction history)
+router.delete('/:id', authenticate, (req, res) => {
+  const { id } = req.params;
+  const contact = query.get('SELECT * FROM borrower_contacts WHERE id = ? AND is_active = 1', [id]);
+  if (!contact) {
+    return res.status(404).json({ success: false, message: 'Kontak peminjam tidak ditemukan.' });
+  }
+
+  const active = query.get(
+    `SELECT COUNT(*) as n FROM transactions
+     WHERE borrower_contact_id = ? AND status IN ('dipesan', 'diserahkan', 'kembali_sebagian')`,
+    [id]
+  );
+  if (active && active.n > 0) {
+    return res.status(409).json({
+      success: false,
+      message: `Kontak masih memiliki ${active.n} transaksi yang belum selesai. Selesaikan transaksinya terlebih dahulu.`
+    });
+  }
+
+  // Soft delete only: transactions/activities keep their reference and stored borrower snapshot.
+  query.run('UPDATE borrower_contacts SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+
+  logAudit(req.user.id, req.user.name, req.user.role, 'DELETE_CONTACT', 'BORROWER_CONTACT', id, {
+    full_name: contact.full_name,
+    email: contact.email
+  });
+
+  res.json({ success: true, message: 'Kontak dihapus. Riwayat transaksi tetap tersimpan.' });
 });
 
 export default router;

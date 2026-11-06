@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ArrowLeft,
   Users,
@@ -22,6 +22,21 @@ interface NewTransactionPageProps {
   onBack: () => void;
   onSuccess: (txId: number) => void;
 }
+
+// Accepts "drive.google.com/..." or full URLs; returns a clean http(s) URL, or null if not valid/empty.
+const normalizeUrl = (raw: string): string | null => {
+  const value = raw.trim();
+  if (!value) return null;
+  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(value) ? value : `https://${value}`;
+  try {
+    const url = new URL(candidate);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (!url.hostname.includes('.')) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+};
 
 export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
   onBack,
@@ -149,21 +164,32 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
     setInputQty(1);
   };
 
-  const addAssetToSelection = (asset: AssetUnit): boolean => {
-    const availableAsset = assets.find((candidate) => candidate.id === asset.id && candidate.status === 'tersedia');
-    if (!availableAsset || selectedLines.some((line) => line.asset_unit_id === asset.id)) return false;
-    setSelectedLines((prev) => [
-      ...prev,
-      {
-        item_type_id: availableAsset.item_type_id,
-        item_name: availableAsset.item_name || 'Aset fisik',
-        tracking_mode: 'unique_unit',
-        asset_unit_id: availableAsset.id,
-        asset_code: availableAsset.asset_code,
-        quantity: 1,
-      },
-    ]);
-    return true;
+  // Always-fresh view of the list: the scanner keeps callbacks from the render it started in,
+  // so state captured in a closure would be stale and let duplicates through.
+  const selectedLinesRef = useRef(selectedLines);
+  selectedLinesRef.current = selectedLines;
+  const assetsRef = useRef(assets);
+  assetsRef.current = assets;
+
+  const addAssetToSelection = (asset: AssetUnit): 'added' | 'duplicate' | 'unavailable' => {
+    if (selectedLinesRef.current.some((line) => line.asset_unit_id === asset.id)) return 'duplicate';
+    const availableAsset = assetsRef.current.find(
+      (candidate) => candidate.id === asset.id && candidate.status === 'tersedia'
+    );
+    if (!availableAsset) return 'unavailable';
+    const line = {
+      item_type_id: availableAsset.item_type_id,
+      item_name: availableAsset.item_name || 'Aset fisik',
+      tracking_mode: 'unique_unit' as const,
+      asset_unit_id: availableAsset.id,
+      asset_code: availableAsset.asset_code,
+      quantity: 1,
+    };
+    selectedLinesRef.current = [...selectedLinesRef.current, line as any];
+    setSelectedLines((prev) =>
+      prev.some((l) => l.asset_unit_id === line.asset_unit_id) ? prev : [...prev, line as any]
+    );
+    return 'added';
   };
 
   const toggleAssetSelection = (asset: AssetUnit, checked: boolean) => {
@@ -239,6 +265,13 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
       error('Pinjaman antarunit wajib menyertakan nomor surat permohonan.');
       return;
     }
+    if (txType === 'inter_unit_loan' && letterNotes.trim()) {
+      const normalized = normalizeUrl(letterNotes);
+      if (!normalized) {
+        error('Tautan dokumen tidak valid. Gunakan alamat yang diawali http:// atau https://.');
+        return;
+      }
+    }
     if (!selectedLines.length) {
       error('Harap pilih minimal satu barang/paket.');
       return;
@@ -261,7 +294,7 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
         letter_number: txType === 'inter_unit_loan' ? letterNumber : null,
         letter_date: txType === 'inter_unit_loan' ? letterDate : null,
         sender_unit: txType === 'inter_unit_loan' ? (senderUnit || borrowerForm.institution) : null,
-        letter_notes: txType === 'inter_unit_loan' ? letterNotes : null,
+        letter_notes: txType === 'inter_unit_loan' ? normalizeUrl(letterNotes) : null,
         lines: selectedLines.map((l) => ({
           item_type_id: l.item_type_id,
           asset_unit_id: l.asset_unit_id || null,
@@ -499,14 +532,20 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
                   </div>
 
                   <div>
-                    <label className="block font-semibold text-purple-900 mb-1">Catatan Dokumen / Arsip:</label>
+                    <label className="block font-semibold text-purple-900 mb-1">Tautan Dokumen / Arsip:</label>
                     <input
-                      type="text"
+                      type="url"
+                      inputMode="url"
+                      autoComplete="off"
                       value={letterNotes}
                       onChange={(e) => setLetterNotes(e.target.value)}
-                      placeholder="Salinan surat fisik tersimpan di map berkas nomor..."
-                      className="w-full px-3 py-2 border border-purple-200 rounded-xl focus:ring-2 focus:ring-purple-500 bg-white"
+                      placeholder="https://drive.google.com/file/d/..."
+                      className="w-full px-3 py-2 border border-purple-200 rounded-xl font-mono text-[11px] focus:ring-2 focus:ring-purple-500 bg-white"
                     />
+                    <p className="mt-1 text-[10px] text-purple-800">
+                      Opsional. Tempel link Google Drive, OneDrive, Dropbox, atau penyimpanan lain. Pastikan akses
+                      berbagi sudah diatur.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -627,7 +666,7 @@ export const NewTransactionPage: React.FC<NewTransactionPageProps> = ({
                   return (
                     <label
                       key={asset.id}
-                      className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-emerald-50/50 ${checked ? 'bg-emerald-50/70' : ''}`}
+                      className={`pick-row flex items-center gap-3 p-3 cursor-pointer ${checked ? 'is-selected' : ''}`}
                     >
                       <input
                         type="checkbox"
